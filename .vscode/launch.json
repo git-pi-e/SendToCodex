@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Codex Terminal Recorder",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--enable-proposed-api=local.codex-terminal-recorder"
+      ]
+    }
+  ]
+}
