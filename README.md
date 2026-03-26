@@ -1,61 +1,104 @@
+![ezgif-666ed7ed9c4d2843](https://github.com/user-attachments/assets/17727aad-e997-42b6-8c34-e566323cedef)
+
 # Send to Codex
 
-Local VS Code extension that keeps a rolling plain-text record for each integrated terminal.
+VS Code extension that captures integrated terminal output, resolves terminal selections back to recorded source lines, and sends the result to Codex.
 
 ## What it does
 
-- Creates one plain-text recording file per terminal.
-- Writes a line index sidecar for selection matching.
-- Keeps only the most recent `N` megabytes per file.
-- Deletes the log file when its terminal closes.
-- Cleans up leftover dead terminal log files on startup.
-- Lets you configure the directory and size limit from VS Code settings.
-- Can optionally write a diagnostics log file for troubleshooting extension activation, Codex integration, and button visibility.
-- Adds `Explorer` context menu actions for files and folders: `Add to Codex Chat` and `Add Folder to Codex Chat`.
+- Captures rolling plain-text output for each integrated terminal.
+- Maintains a line index sidecar to make terminal selection matching more reliable.
+- Sends terminal context to Codex as a compact Markdown bundle file.
+- Creates immutable per-selection terminal snapshots and reuses the previous snapshot file when the buffer did not change.
+- Supports editor selections and Explorer file or folder attachments in addition to terminal selections.
+- Shows a native Windows popup near terminal and editor selections, with optional status bar fallback buttons.
+- Can write a diagnostics log for troubleshooting activation, selection detection, and Codex integration.
+
+## How terminal sending works
+
+1. The extension resolves the active terminal selection using the configured strategy.
+2. It captures or reuses an immutable snapshot of the terminal buffer for that selection.
+3. It generates a `terminal-xxx-<name>.selection-yyy.md` file with the snapshot path, resolved source range, selected text, related command, and nearby numbered context.
+4. In `contextBundle` and `attachmentFile` modes, only that Markdown file is attached to Codex. The snapshot `.txt` file stays on disk and is referenced from the bundle.
+5. In `editorSelection` mode, the extension opens the relevant terminal text in an editor and sends it as a normal editor selection.
+
+## Files and storage
+
+When `codexTerminalRecorder.logDirectory` is empty, recordings are stored outside the workspace in the extension global storage directory. This is the default and recommended setup because it keeps generated files out of your repo.
+
+Typical output files:
+
+- `terminal-001-bash.txt`: rolling terminal text log
+- `terminal-001-bash.lines.json`: line index sidecar
+- `terminal-001-bash.selection-001.md`: context bundle attached to Codex
+- `terminal-001-bash.snapshot-001.txt`: immutable terminal snapshot referenced from the bundle
+
+If a new selection snapshot matches the previous snapshot for the same terminal, the extension reuses the existing `.snapshot-xxx.txt` path instead of writing a duplicate file.
+
+Use `Send to Codex: Open Log Directory` to open the current recordings folder.
 
 ## Selection tracking strategies
 
-- `terminalSelectionTextSearch`: read the current terminal selection and search in the plain-text log.
-- `indexedTerminalSelectionSearch`: read the current terminal selection and resolve it with the plain-text log plus the line index sidecar.
-- `clipboardTextSearch`: read copied terminal text from the clipboard and search in the plain-text log.
+- `terminalSelectionTextSearch`: reads the live terminal selection and finds its last occurrence in the plain-text terminal log.
+- `indexedTerminalSelectionSearch`: reads the live terminal selection and resolves its location using the plain-text log plus the line index sidecar.
+- `clipboardTextSearch`: reads copied terminal text from the clipboard and finds its last occurrence in the plain-text terminal log. Useful when direct terminal selection access is unavailable or unreliable.
 
-Use the `Send to Codex: Locate Active Terminal Selection` command to test the currently selected strategy.
-Use `Send to Codex` to send the resolved terminal context to Codex.
-Use `codexTerminalRecorder.terminalContextSendMode` to choose between a structured Markdown context bundle, a separate attachment file, and the legacy editor-selection flow.
-Leave `codexTerminalRecorder.logDirectory` empty to store terminal recordings in the extension storage directory outside the workspace.
-On Windows, the extension can surface a compact native popup action near the cursor for editor and terminal selections, with a close action on the right edge.
-The `Ctrl+Shift+L` shortcut remains available for both editor and terminal selections.
-The optional status bar buttons are kept as a disabled-by-default fallback and can be enabled in settings.
-When Codex is available, the status bar also shows a settings badge with the number of currently captured terminals.
-Use `Send to Codex: Open Diagnostics Log` to inspect the extension file log.
+Use `Send to Codex: Locate Active Terminal Selection` to inspect how the current strategy resolves the active selection.
 
-## Current limitation
+## Usage
 
-This version uses the proposed `terminalDataWriteEvent` API because the stable VS Code API does not expose the full integrated terminal stream.
-Existing terminal scrollback is not backfilled: logging starts only after the extension begins tracking a terminal and new output is produced.
-When the raw data stream is unavailable, the extension falls back to shell integration command capture when VS Code reports shell execution events.
-If those events still do not arrive, opening the active terminal log or sending terminal context will attempt an on-demand snapshot of the visible terminal buffer.
+- Select text in the terminal and use the native popup, terminal context menu, or `Ctrl+Shift+L` to send it to Codex.
+- Select text in an editor and use the popup or `Ctrl+Shift+L` to send the editor selection.
+- Right-click a file or folder in Explorer and use `Add to Codex Chat` or `Add Folder to Codex Chat`.
 
-To run it locally you need:
+The status bar buttons are disabled by default and exist as a fallback when the native popup is not desired.
 
-1. VS Code Insiders or extension development mode.
-2. The proposed API enabled for this extension:
+## Commands
+
+- `Send to Codex`
+- `Send Selection to Codex`
+- `Send to Codex: Locate Active Terminal Selection`
+- `Send to Codex: Open Active Terminal Log`
+- `Send to Codex: Open Log Directory`
+- `Send to Codex: Open Diagnostics Log`
+- `Send to Codex: Open Settings`
+- `Send to Codex: Toggle Diagnostics Logging`
+- `Send to Codex: Toggle Diagnostics Log File`
+
+## Settings
+
+- `codexTerminalRecorder.enabled`: enable or disable terminal capture.
+- `codexTerminalRecorder.terminalContextSendMode`: choose between `contextBundle`, `attachmentFile`, and `editorSelection`.
+- `codexTerminalRecorder.selectionTrackingStrategy`: choose how terminal selection text is captured and mapped back to the log files.
+- `codexTerminalRecorder.selectionContextLines`: number of surrounding lines to include in the context preview.
+- `codexTerminalRecorder.showNativeTerminalSelectionPopup`: show the native Windows popup for terminal selections.
+- `codexTerminalRecorder.showNativeEditorSelectionPopup`: show the native Windows popup for editor selections.
+- `codexTerminalRecorder.showCodexSelectionButton`: show the fallback terminal status bar button.
+- `codexTerminalRecorder.showCodexEditorSelectionButton`: show the fallback editor status bar button.
+- `codexTerminalRecorder.maxFileSizeMb`: rolling size limit per terminal log.
+- `codexTerminalRecorder.logDirectory`: target directory for recordings. Leave empty to use extension storage outside the workspace.
+- `codexTerminalRecorder.diagnosticsLoggingEnabled`: enable diagnostic logging.
+- `codexTerminalRecorder.diagnosticsLogFileEnabled`: also write diagnostics to a log file on disk.
+
+## Requirements and limitations
+
+This extension currently depends on proposed VS Code terminal APIs:
+
+- `terminalDataWriteEvent`
+- `terminalExecuteCommandEvent`
+- `terminalSelection`
+
+That means:
+
+1. You need VS Code Insiders or extension development mode.
+2. You must enable the proposed API for this extension:
 
 ```powershell
 code-insiders --enable-proposed-api=local.codex-terminal-recorder
 ```
 
-## Settings
+The extension also expects the OpenAI VS Code extension to be installed and enabled so the Codex attach commands are available.
 
-- `codexTerminalRecorder.enabled`
-- `codexTerminalRecorder.maxFileSizeMb`
-- `codexTerminalRecorder.logDirectory`
-- `codexTerminalRecorder.diagnosticsLoggingEnabled`
-- `codexTerminalRecorder.diagnosticsLogFileEnabled`
-- `codexTerminalRecorder.selectionTrackingStrategy`
-- `codexTerminalRecorder.selectionContextLines`
-- `codexTerminalRecorder.terminalContextSendMode`
-- `codexTerminalRecorder.showNativeTerminalSelectionPopup`
-- `codexTerminalRecorder.showNativeEditorSelectionPopup`
-- `codexTerminalRecorder.showCodexSelectionButton`
-- `codexTerminalRecorder.showCodexEditorSelectionButton`
+Existing terminal scrollback is not backfilled. Capture starts after the extension begins tracking a terminal and new output is produced. If the raw data stream is unavailable, the extension falls back to shell integration command capture. If that still does not provide enough data, opening the active terminal log or sending terminal context can trigger an on-demand snapshot of the visible terminal buffer.
+
+Because the extension relies on proposed APIs, it is suitable for local use, development, and VSIX sharing, but not for VS Code Marketplace publication in its current form.

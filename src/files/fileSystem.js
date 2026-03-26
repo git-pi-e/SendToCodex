@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const UTF8_BOM = '\uFEFF';
+
 async function ensureDirectory(directoryPath) {
   await fs.promises.mkdir(directoryPath, { recursive: true });
 }
@@ -13,7 +15,7 @@ async function ensureDirectoryForFile(filePath) {
 
 async function readTextFileIfExists(filePath) {
   try {
-    return await fs.promises.readFile(filePath, 'utf8');
+    return stripUtf8Bom(await fs.promises.readFile(filePath, 'utf8'));
   } catch (error) {
     if (error && error.code === 'ENOENT') {
       return '';
@@ -25,12 +27,26 @@ async function readTextFileIfExists(filePath) {
 
 async function writeTextFile(filePath, contents) {
   await ensureDirectoryForFile(filePath);
-  await fs.promises.writeFile(filePath, contents, 'utf8');
+  await fs.promises.writeFile(filePath, encodeUtf8WithBom(contents), 'utf8');
 }
 
 async function appendTextFile(filePath, contents) {
   await ensureDirectoryForFile(filePath);
-  await fs.promises.appendFile(filePath, contents, 'utf8');
+  const text = String(contents || '');
+
+  try {
+    const stats = await fs.promises.stat(filePath);
+    if (stats.size > 0) {
+      await fs.promises.appendFile(filePath, text, 'utf8');
+      return;
+    }
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  await fs.promises.writeFile(filePath, encodeUtf8WithBom(text), 'utf8');
 }
 
 async function deleteFileIfExists(filePath) {
@@ -58,6 +74,15 @@ async function listFilePaths(directoryPath) {
 
     throw error;
   }
+}
+
+function stripUtf8Bom(value) {
+  return String(value || '').replace(/^\uFEFF/, '');
+}
+
+function encodeUtf8WithBom(value) {
+  const text = stripUtf8Bom(value);
+  return `${UTF8_BOM}${text}`;
 }
 
 module.exports = {
