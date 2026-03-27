@@ -1,6 +1,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { getClipboardSequenceNumber } = require('../native/windows/clipboardSequence');
 const {
   rememberTerminalSelectionText,
   runWithTerminalSelectionCacheSuppressed
@@ -20,9 +21,17 @@ class TerminalCommandSnapshotter {
   constructor(output, logger) {
     this.output = output;
     this.logger = logger;
+    this.snapshotQueue = Promise.resolve();
   }
 
   async captureLastCommandSnapshot(terminal, state) {
+    const runCapture = async () => this.captureLastCommandSnapshotOnce(terminal, state);
+    const queuedCapture = this.snapshotQueue.catch(() => undefined).then(runCapture, runCapture);
+    this.snapshotQueue = queuedCapture.then(() => undefined, () => undefined);
+    return queuedCapture;
+  }
+
+  async captureLastCommandSnapshotOnce(terminal, state) {
     if (!terminal || !state || terminal !== vscode.window.activeTerminal) {
       return {
         captured: false,
@@ -30,17 +39,16 @@ class TerminalCommandSnapshotter {
       };
     }
 
-    const previousClipboardText = await vscode.env.clipboard.readText();
-    const sentinel = `${CLIPBOARD_SENTINEL_PREFIX}${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const clipboardState = await createClipboardSnapshotState();
 
     try {
-      await vscode.env.clipboard.writeText(sentinel);
+      await armClipboardSnapshotState(clipboardState);
 
-      let copiedText = await this.tryCopyVisibleBufferSnapshot(terminal, sentinel);
+      let copiedText = await this.tryCopyVisibleBufferSnapshot(terminal, clipboardState);
       let mode = 'visible-buffer';
 
       if (!copiedText) {
-        copiedText = await this.tryCopyAccessibleBufferSnapshot(terminal, sentinel);
+        copiedText = await this.tryCopyAccessibleBufferSnapshot(terminal, clipboardState);
         mode = 'accessible-buffer';
       }
       if (!copiedText) {
@@ -89,7 +97,7 @@ class TerminalCommandSnapshotter {
       };
     } finally {
       try {
-        await vscode.env.clipboard.writeText(previousClipboardText);
+        await restoreClipboardSnapshotState(clipboardState);
       } catch (restoreError) {
         const restoreMessage =
           restoreError && restoreError.message ? restoreError.message : String(restoreError);
@@ -101,7 +109,7 @@ class TerminalCommandSnapshotter {
     }
   }
 
-  async tryCopyVisibleBufferSnapshot(terminal, sentinel) {
+  async tryCopyVisibleBufferSnapshot(terminal, clipboardState) {
     const originalSelection = readTerminalSelectionText(terminal);
     rememberTerminalSelectionText(terminal, originalSelection);
 
@@ -120,7 +128,7 @@ class TerminalCommandSnapshotter {
             await delay(100);
 
             const copiedText = await vscode.env.clipboard.readText();
-            if (!copiedText || copiedText === sentinel) {
+            if (!didClipboardSnapshotCaptureText(copiedText, clipboardState)) {
               continue;
             }
 
@@ -166,7 +174,7 @@ class TerminalCommandSnapshotter {
     }
   }
 
-  async tryCopyAccessibleBufferSnapshot(terminal, sentinel) {
+  async tryCopyAccessibleBufferSnapshot(terminal, clipboardState) {
     let openedAccessibleBuffer = false;
 
     try {
@@ -181,7 +189,7 @@ class TerminalCommandSnapshotter {
         await vscode.commands.executeCommand(commandId);
         await delay(100);
         const copiedText = await vscode.env.clipboard.readText();
-        if (copiedText && copiedText !== sentinel) {
+        if (didClipboardSnapshotCaptureText(copiedText, clipboardState)) {
           return copiedText;
         }
       }
@@ -271,6 +279,64 @@ function delay(milliseconds) {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+async function createClipboardSnapshotState() {
+  const previousText = await vscode.env.clipboard.readText();
+  const previousSequenceNumber = getClipboardSequenceNumber();
+  const sentinel =
+    previousSequenceNumber === null
+      ? `${CLIPBOARD_SENTINEL_PREFIX}${Date.now()}_${Math.random().toString(16).slice(2)}`
+      : '';
+
+  return {
+    previousSequenceNumber,
+    previousText,
+    sentinel
+  };
+}
+
+async function armClipboardSnapshotState(clipboardState) {
+  if (!clipboardState || !clipboardState.sentinel) {
+    return;
+  }
+
+  await vscode.env.clipboard.writeText(clipboardState.sentinel);
+}
+
+async function restoreClipboardSnapshotState(clipboardState) {
+  if (!clipboardState || !clipboardState.sentinel) {
+    return;
+  }
+
+  await vscode.env.clipboard.writeText(clipboardState.previousText);
+}
+
+function didClipboardSnapshotCaptureText(copiedText, clipboardState) {
+  const normalizedCopiedText = String(copiedText || '');
+  if (!normalizedCopiedText) {
+    return false;
+  }
+
+  if (
+    clipboardState &&
+    clipboardState.sentinel &&
+    normalizedCopiedText === clipboardState.sentinel
+  ) {
+    return false;
+  }
+
+  if (clipboardState && clipboardState.previousSequenceNumber !== null) {
+    const currentSequenceNumber = getClipboardSequenceNumber();
+    if (
+      currentSequenceNumber !== null &&
+      currentSequenceNumber !== clipboardState.previousSequenceNumber
+    ) {
+      return true;
+    }
+  }
+
+  return !clipboardState || normalizedCopiedText !== String(clipboardState.previousText || '');
 }
 
 module.exports = {

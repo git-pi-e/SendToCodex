@@ -109,7 +109,7 @@ function activate(context) {
     vscode.commands.registerCommand('codexTerminalRecorder.openSettings', async () => {
       await vscode.commands.executeCommand(
         'workbench.action.openSettings',
-        '@ext:local.codex-terminal-recorder codexTerminalRecorder'
+        `@ext:${context.extension.id} ${CONFIG_SECTION}`
       );
     }),
     vscode.commands.registerCommand(
@@ -203,7 +203,7 @@ function activate(context) {
     diagnosticsLogPath: logger.logFilePath,
     outputChannelName: OUTPUT_CHANNEL_NAME,
     openAiExtensionInstalled: Boolean(vscode.extensions.getExtension('openai.chatgpt')),
-    terminalWriteApiAvailable: typeof vscode.window.onDidWriteTerminalData === 'function'
+    terminalWriteApiAvailable: isTerminalWriteApiAvailable()
   });
   void manager.activate();
 }
@@ -216,6 +216,14 @@ async function toggleBooleanSetting(settingName, defaultValue) {
 }
 
 function deactivate() {}
+
+function isTerminalWriteApiAvailable() {
+  try {
+    return typeof vscode.window.onDidWriteTerminalData === 'function';
+  } catch {
+    return false;
+  }
+}
 
 module.exports = {
   activate,

@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Send to Codex",
   "description": "Keeps a rolling per-terminal text recording with the latest integrated terminal output.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "screph",
   "license": "UNLICENSED",
   "icon": "media/icon.png",

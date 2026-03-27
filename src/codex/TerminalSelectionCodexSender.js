@@ -1,6 +1,6 @@
 'use strict';
 const vscode = require('vscode');
-const { TERMINAL_CONTEXT_SEND_MODES } = require('../config');
+const { SELECTION_TRACKING_STRATEGIES, TERMINAL_CONTEXT_SEND_MODES } = require('../config');
 const { writeTextFile } = require('../files/fileSystem');
 const { formatCaptureHealthForEmptyLog } = require('../terminalLogs/captureHealth');
 const { getRecentTerminalSelectionText } = require('../terminalSelection/selectionSources');
@@ -170,7 +170,12 @@ class TerminalSelectionCodexSender {
   async tryResolveViaLastCommandSnapshot(resolution) {
     const terminalLogManager =
       this.selectionResolver && this.selectionResolver.terminalLogManager;
-    if (!terminalLogManager || !resolution || !resolution.terminal) {
+    if (
+      !terminalLogManager ||
+      !resolution ||
+      !resolution.terminal ||
+      !shouldUseClipboardSnapshotCapture(resolution)
+    ) {
       return null;
     }
 
@@ -388,7 +393,9 @@ class TerminalSelectionCodexSender {
     const selectionSnapshot = await terminalLogManager.captureSelectionSnapshot(
       resolution.terminal,
       {
-        useCurrentBufferOnly: Boolean(resolution.canReuseCurrentBufferForSelectionSnapshot)
+        useCurrentBufferOnly:
+          !shouldUseClipboardSnapshotCapture(resolution) ||
+          Boolean(resolution.canReuseCurrentBufferForSelectionSnapshot)
       }
     );
     resolution.selectionSnapshot = selectionSnapshot;
@@ -424,6 +431,15 @@ function getSelectionText(resolution, result) {
   return resolution && resolution.terminal
     ? getRecentTerminalSelectionText(resolution.terminal)
     : '';
+}
+
+function shouldUseClipboardSnapshotCapture(resolution) {
+  return (
+    resolution &&
+    resolution.configuration &&
+    resolution.configuration.selectionTrackingStrategy ===
+      SELECTION_TRACKING_STRATEGIES.clipboardTextSearch
+  );
 }
 
 function buildResolvedAttachmentText(options) {

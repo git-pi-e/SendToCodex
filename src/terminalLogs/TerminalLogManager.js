@@ -37,23 +37,26 @@ class TerminalLogManager {
     this.logDirectory = '';
     this.cleaner = new TerminalLogCleaner(output);
     this.commandSnapshotter = new TerminalCommandSnapshotter(output, logger);
+    this.terminalWriteApiAvailable = false;
+    this.shellExecutionApiAvailable = false;
     this.onDidChangeCapturedTerminalCountEmitter = new vscode.EventEmitter();
     this.onDidChangeCapturedTerminalCount = this.onDidChangeCapturedTerminalCountEmitter.event;
   }
 
   async activate() {
-    const terminalWriteApiAvailable = this.isTerminalWriteApiAvailable();
-    const shellExecutionApiAvailable = this.isShellExecutionApiAvailable();
+    const onDidChangeTerminalShellIntegration = getWindowEvent(
+      'onDidChangeTerminalShellIntegration'
+    );
+    const onDidWriteTerminalData = getWindowEvent('onDidWriteTerminalData');
+    const onDidStartTerminalShellExecution = getWindowEvent('onDidStartTerminalShellExecution');
+    let terminalWriteApiAvailable = false;
+    let shellExecutionApiAvailable = false;
 
     this.logger &&
       this.logger.info('Activating terminal log manager.', {
         vscodeVersion: vscode.version,
-        terminalCount: vscode.window.terminals.length,
-        terminalWriteApiAvailable,
-        shellExecutionApiAvailable
+        terminalCount: vscode.window.terminals.length
       });
-    await this.reloadConfiguration(false);
-
     this.runtimeDisposables.push(
       vscode.window.onDidOpenTerminal((terminal) => {
         if (this.configuration.enabled) {
@@ -65,43 +68,80 @@ class TerminalLogManager {
       })
     );
 
-    if (typeof vscode.window.onDidChangeTerminalShellIntegration === 'function') {
-      this.runtimeDisposables.push(
-        vscode.window.onDidChangeTerminalShellIntegration((event) => {
-          this.handleTerminalShellIntegrationChange(event);
-        })
-      );
+    if (onDidChangeTerminalShellIntegration) {
+      try {
+        this.runtimeDisposables.push(
+          onDidChangeTerminalShellIntegration((event) => {
+            this.handleTerminalShellIntegrationChange(event);
+          })
+        );
+      } catch (error) {
+        this.logger &&
+          this.logger.warn('Terminal shell integration event is unavailable.', {
+            error: error && error.message ? error.message : String(error)
+          });
+      }
     }
 
-    if (!terminalWriteApiAvailable) {
+    if (onDidWriteTerminalData) {
+      try {
+        this.runtimeDisposables.push(
+          onDidWriteTerminalData((event) => {
+            if (!this.configuration.enabled) {
+              return;
+            }
+
+            this.handleTerminalDataWrite(event.terminal, event.data);
+          })
+        );
+        terminalWriteApiAvailable = true;
+      } catch (error) {
+        this.logger &&
+          this.logger.warn('Terminal write API subscription failed.', {
+            error: error && error.message ? error.message : String(error)
+          });
+      }
+    }
+
+    if (onDidStartTerminalShellExecution) {
+      try {
+        this.runtimeDisposables.push(
+          onDidStartTerminalShellExecution((event) => {
+            if (!this.configuration.enabled) {
+              return;
+            }
+
+            void this.handleShellExecutionStart(event);
+          })
+        );
+        shellExecutionApiAvailable = true;
+      } catch (error) {
+        this.logger &&
+          this.logger.warn('Terminal shell execution API subscription failed.', {
+            error: error && error.message ? error.message : String(error)
+          });
+      }
+    }
+
+    this.terminalWriteApiAvailable = terminalWriteApiAvailable;
+    this.shellExecutionApiAvailable = shellExecutionApiAvailable;
+
+    this.logger &&
+      this.logger.info('Terminal capture API availability resolved.', {
+        shellExecutionApiAvailable,
+        terminalWriteApiAvailable
+      });
+
+    await this.reloadConfiguration(false);
+
+    if (!terminalWriteApiAvailable && !shellExecutionApiAvailable) {
       this.logger &&
-        this.logger.warn('Terminal write API is unavailable.', {
+        this.logger.warn('No terminal capture APIs are available.', {
+          shellExecutionApiAvailable: false,
           terminalWriteApiAvailable: false
         });
       this.output.appendLine(TERMINAL_CAPTURE_API_HINT);
       void vscode.window.showWarningMessage(TERMINAL_CAPTURE_API_HINT);
-    } else {
-      this.runtimeDisposables.push(
-        vscode.window.onDidWriteTerminalData((event) => {
-          if (!this.configuration.enabled) {
-            return;
-          }
-
-          this.handleTerminalDataWrite(event.terminal, event.data);
-        })
-      );
-    }
-
-    if (shellExecutionApiAvailable) {
-      this.runtimeDisposables.push(
-        vscode.window.onDidStartTerminalShellExecution((event) => {
-          if (!this.configuration.enabled) {
-            return;
-          }
-
-          void this.handleShellExecutionStart(event);
-        })
-      );
     }
   }
 
@@ -196,7 +236,6 @@ class TerminalLogManager {
       return;
     }
 
-    await this.captureLastCommandSnapshot(terminal);
     const state = await this.ensureState(terminal);
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(state.paths.textLogPath));
     await vscode.window.showTextDocument(document, { preview: false });
@@ -253,11 +292,11 @@ class TerminalLogManager {
   }
 
   isTerminalWriteApiAvailable() {
-    return typeof vscode.window.onDidWriteTerminalData === 'function';
+    return this.terminalWriteApiAvailable;
   }
 
   isShellExecutionApiAvailable() {
-    return typeof vscode.window.onDidStartTerminalShellExecution === 'function';
+    return this.shellExecutionApiAvailable;
   }
 
   dispose() {
@@ -291,7 +330,7 @@ class TerminalLogManager {
       captureHealth: createCaptureHealth({
         terminalWriteApiAvailable: this.isTerminalWriteApiAvailable(),
         shellExecutionApiAvailable: this.isShellExecutionApiAvailable(),
-        shellIntegrationActive: Boolean(terminal.shellIntegration)
+        shellIntegrationActive: hasTerminalShellIntegration(terminal)
       })
     };
 
@@ -302,7 +341,7 @@ class TerminalLogManager {
       this.logger.info('Tracking terminal for capture.', {
         terminalName: terminal.name,
         baseName: state.paths.baseName,
-        shellIntegrationActive: Boolean(terminal.shellIntegration)
+        shellIntegrationActive: hasTerminalShellIntegration(terminal)
       });
     return state;
   }
@@ -360,6 +399,28 @@ class TerminalLogManager {
       });
 
     try {
+      const shellExecutionPreamble = this.terminalWriteApiAvailable
+        ? ''
+        : buildShellExecutionPreamble(event);
+
+      if (shellExecutionPreamble) {
+        const hadCapturedData = hasCapturedData(state.captureHealth);
+        if (state.captureMode !== 'shellExecution') {
+          state.captureMode = 'shellExecution';
+          this.logger &&
+            this.logger.info('Terminal capture mode selected.', {
+              terminalName: event.terminal.name,
+              mode: state.captureMode
+            });
+        }
+
+        markCapturedChunk(state.captureHealth, 'shellExecution', shellExecutionPreamble);
+        if (!hadCapturedData && hasCapturedData(state.captureHealth)) {
+          this.emitCapturedTerminalCountChanged();
+        }
+        state.sink.append(shellExecutionPreamble);
+      }
+
       for await (const chunk of executionStream) {
         const hadCapturedData = hasCapturedData(state.captureHealth);
         if (state.captureMode === 'terminalDataWrite') {
@@ -487,6 +548,78 @@ function normalizeSnapshotText(value) {
   return String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
+function buildShellExecutionPreamble(event) {
+  const commandLine = normalizeCommandLine(
+    event &&
+      event.execution &&
+      event.execution.commandLine &&
+      event.execution.commandLine.value
+  );
+  if (!commandLine) {
+    return '';
+  }
+
+  const cwd = getExecutionCwdPath(event && event.execution && event.execution.cwd);
+  const promptPrefix = buildPromptPrefix(event, cwd);
+  return `${promptPrefix}${commandLine}\n`;
+}
+
+function normalizeCommandLine(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
+}
+
+function getExecutionCwdPath(cwd) {
+  if (!cwd) {
+    return '';
+  }
+
+  if (typeof cwd.fsPath === 'string' && cwd.fsPath.trim()) {
+    return cwd.fsPath.trim();
+  }
+
+  if (typeof cwd.path === 'string' && cwd.path.trim()) {
+    return cwd.path.trim();
+  }
+
+  return '';
+}
+
+function buildPromptPrefix(event, cwd) {
+  if (process.platform === 'win32') {
+    const promptPath = cwd || '.';
+    return `PS ${promptPath}> `;
+  }
+
+  if (cwd) {
+    return `${cwd}$ `;
+  }
+
+  return '$ ';
+}
+
 module.exports = {
   TerminalLogManager
 };
+
+function getWindowEvent(propertyName) {
+  try {
+    const candidate = vscode.window[propertyName];
+    return typeof candidate === 'function' ? candidate.bind(vscode.window) : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasTerminalShellIntegration(terminal) {
+  try {
+    return Boolean(terminal && terminal.shellIntegration);
+  } catch {
+    return false;
+  }
+}
