@@ -1,6 +1,11 @@
 name: Build VSIX
 
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
   workflow_dispatch:
   release:
     types:
@@ -31,7 +36,7 @@ jobs:
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vscode-extension-vsix
+          name: codex-terminal-recorder-vsix
           path: "*.vsix"
           if-no-files-found: error
 
