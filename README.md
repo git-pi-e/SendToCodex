@@ -110,6 +110,7 @@ When working on this repository, connect the current folder to VS Code as a deve
 ## Settings
 
 - `codexSwitch.enabled`: enable or disable Codex profiles and rate limits.
+- `codexTerminalRecorder.sendToCodexEnabled`: enable or disable the full Send to Codex workflow from the profile switcher menu.
 - `codexTerminalRecorder.enabled`: enable or disable terminal capture.
 - `codexTerminalRecorder.terminalContextSendMode`: choose between `contextBundle`, `attachmentFile`, and `editorSelection`.
 - `codexTerminalRecorder.selectionTrackingStrategy`: choose how terminal selection text is captured and mapped back to the log files.

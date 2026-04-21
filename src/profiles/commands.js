@@ -5,12 +5,21 @@ const os = require('os');
 const path = require('path');
 const vscode = require('vscode');
 const {
+  CONFIG_SECTION,
+  SEND_TO_CODEX_ENABLED_DEFAULT,
+  SEND_TO_CODEX_ENABLED_SETTING
+} = require('../config');
+const {
   getDefaultCodexAuthPath,
   loadAuthDataFromFile,
   shouldUseWslAuthPath
 } = require('./authManager');
 const { areProfileFeaturesEnabled } = require('./featureFlags');
-const { formatCompactRateSummary, getProfileRateStatus } = require('./profileStatus');
+const {
+  formatCompactRateSummary,
+  formatPlanType,
+  getProfileRateStatus
+} = require('./profileStatus');
 const { RateLimitDetailsPanel } = require('./webview');
 
 function hasRequiredStoredTokens(tokens) {
@@ -58,6 +67,7 @@ async function buildProfileQuickPickItems(profiles, activeProfileId, profileMana
     if (authState.description) {
       descriptionParts.push(authState.description);
     }
+    descriptionParts.push(formatPlanType(profile.planType));
     if (profile.email && profile.email !== 'Unknown') {
       descriptionParts.push(profile.email);
     }
@@ -130,12 +140,12 @@ function buildReloadWindowToggleItem(enabled) {
 }
 
 function buildSendToCodexToggleItem(enabled) {
-  const disabled = !enabled;
   return {
-    label: `${disabled ? '$(check)' : '$(circle-large-outline)'} Disable Send to Codex`,
-    description: disabled ? 'On' : 'Off',
-    detail:
-      'Turns off Send to Codex capture, popups, status buttons, and attach commands while keeping profiles available.',
+    label: `${enabled ? '$(check)' : '$(circle-large-outline)'} Send to Codex`,
+    description: enabled ? 'On' : 'Off',
+    detail: enabled
+      ? 'Click to turn off capture, popups, status buttons, and attach commands while keeping profiles available.'
+      : 'Click to turn Send to Codex capture, popups, status buttons, and attach commands back on.',
     sendToggle: true
   };
 }
@@ -305,8 +315,8 @@ function registerProfileCommands(
 
   const getSendToCodexEnabled = () => Boolean(
     vscode.workspace
-      .getConfiguration('codexTerminalRecorder')
-      .get('sendToCodexEnabled', true)
+      .getConfiguration(CONFIG_SECTION)
+      .get(SEND_TO_CODEX_ENABLED_SETTING, SEND_TO_CODEX_ENABLED_DEFAULT)
   );
 
   const setReloadWindowAfterProfileSwitch = async (enabled) => {
@@ -321,8 +331,12 @@ function registerProfileCommands(
 
   const setSendToCodexEnabled = async (enabled) => {
     await vscode.workspace
-      .getConfiguration('codexTerminalRecorder')
-      .update('sendToCodexEnabled', Boolean(enabled), vscode.ConfigurationTarget.Global);
+      .getConfiguration(CONFIG_SECTION)
+      .update(
+        SEND_TO_CODEX_ENABLED_SETTING,
+        Boolean(enabled),
+        vscode.ConfigurationTarget.Global
+      );
   };
 
   const ensureProfileFeaturesEnabled = async () => {

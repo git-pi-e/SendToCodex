@@ -5,7 +5,8 @@ const {
   DIAGNOSTICS_LOG_FILE_ENABLED_DEFAULT,
   DIAGNOSTICS_LOGGING_ENABLED_DEFAULT,
   isSendToCodexEnabled,
-  OUTPUT_CHANNEL_NAME
+  OUTPUT_CHANNEL_NAME,
+  SEND_TO_CODEX_ENABLED_SETTING
 } = require('./config');
 const { FileLogger } = require('./logging/FileLogger');
 const { ActiveTerminalSelectionResolver } = require('./terminalSelection/ActiveTerminalSelectionResolver');
@@ -239,7 +240,7 @@ function activate(context) {
     if (selection === enableLabel) {
       await vscode.workspace
         .getConfiguration(CONFIG_SECTION)
-        .update('sendToCodexEnabled', true, vscode.ConfigurationTarget.Global);
+        .update(SEND_TO_CODEX_ENABLED_SETTING, true, vscode.ConfigurationTarget.Global);
       return true;
     }
 

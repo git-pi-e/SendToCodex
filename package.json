@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.6",
+  "version": "0.0.8",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -214,14 +214,20 @@
             "default": true,
             "description": "Enable Codex profile switching and per-profile rate-limit tracking."
           },
-          "codexTerminalRecorder.enabled": {
+          "codexTerminalRecorder.sendToCodexEnabled": {
             "order": 1,
+            "type": "boolean",
+            "default": true,
+            "description": "Enable Send to Codex capture, native popups, status buttons, and attach commands."
+          },
+          "codexTerminalRecorder.enabled": {
+            "order": 2,
             "type": "boolean",
             "default": true,
             "description": "Enable rolling terminal log capture."
           },
           "codexTerminalRecorder.terminalContextSendMode": {
-            "order": 2,
+            "order": 3,
             "type": "string",
             "default": "contextBundle",
             "enum": [
@@ -237,7 +243,7 @@
             "description": "Choose how terminal context is sent to Codex."
           },
           "codexTerminalRecorder.selectionTrackingStrategy": {
-            "order": 3,
+            "order": 4,
             "type": "string",
             "default": "terminalSelectionTextSearch",
             "enum": [
@@ -253,7 +259,7 @@
             "description": "Choose how terminal selection text is captured and mapped back to the terminal log files."
           },
           "codexTerminalRecorder.selectionContextLines": {
-            "order": 4,
+            "order": 5,
             "type": "number",
             "default": 3,
             "minimum": 0,
@@ -261,7 +267,7 @@
             "description": "Number of surrounding lines to include around the resolved terminal selection when preparing context for Codex."
           },
           "codexTerminalRecorder.selectionPairRetentionCount": {
-            "order": 5,
+            "order": 6,
             "type": "number",
             "default": 50,
             "minimum": 1,
@@ -269,31 +275,31 @@
             "description": "Number of terminal selection attachment and snapshot file pairs to retain across terminal close and VS Code restarts."
           },
           "codexTerminalRecorder.showNativeTerminalSelectionPopup": {
-            "order": 6,
+            "order": 7,
             "type": "boolean",
             "default": true,
             "description": "Show a native platform popup action near the cursor when terminal text selection becomes available."
           },
           "codexTerminalRecorder.showNativeEditorSelectionPopup": {
-            "order": 7,
+            "order": 8,
             "type": "boolean",
             "default": true,
             "description": "Show a native platform popup action near the cursor when editor text selection becomes available."
           },
           "codexTerminalRecorder.showCodexSelectionButton": {
-            "order": 8,
+            "order": 9,
             "type": "boolean",
             "default": false,
             "description": "Show a fallback status bar button for sending the active terminal selection to Codex Chat."
           },
           "codexTerminalRecorder.showCodexEditorSelectionButton": {
-            "order": 9,
+            "order": 10,
             "type": "boolean",
             "default": false,
             "description": "Show a fallback status bar button for sending the active editor selection to Codex Chat."
           },
           "codexTerminalRecorder.maxFileSizeMb": {
-            "order": 10,
+            "order": 11,
             "type": "number",
             "default": 1,
             "minimum": 0.1,
@@ -301,19 +307,19 @@
             "description": "Maximum size in megabytes to keep per terminal recording file."
           },
           "codexTerminalRecorder.logDirectory": {
-            "order": 11,
+            "order": 12,
             "type": "string",
             "default": "",
             "markdownDescription": "Directory where terminal recording files are stored. Leave empty to use the extension storage directory outside the workspace (recommended). Relative paths resolve from the first workspace folder; absolute paths are used as-is. [Open recordings folder](command:codexTerminalRecorder.openLogDirectory)"
           },
           "codexTerminalRecorder.diagnosticsLoggingEnabled": {
-            "order": 12,
+            "order": 13,
             "type": "boolean",
             "default": false,
             "description": "Enable diagnostic logging for extension internals."
           },
           "codexTerminalRecorder.diagnosticsLogFileEnabled": {
-            "order": 13,
+            "order": 14,
             "type": "boolean",
             "default": false,
             "markdownDescription": "Write diagnostics into a local log file when diagnostics logging is enabled. [Open diagnostics log](command:codexTerminalRecorder.openDiagnosticsLog)"
