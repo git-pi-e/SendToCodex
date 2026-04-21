@@ -140,6 +140,14 @@ function buildSendToCodexToggleItem(enabled) {
   };
 }
 
+function buildSendToCodexSettingsItem() {
+  return {
+    label: '$(gear) Send to Codex settings...',
+    detail: 'Open capture, popup, status button, and attachment settings.',
+    command: 'codexTerminalRecorder.openSettings'
+  };
+}
+
 function buildManageProfilesItem() {
   return {
     label: '$(settings-gear) More profile actions...',
@@ -191,6 +199,7 @@ function buildSwitchQuickPickItems(
     },
     buildReloadWindowToggleItem(reloadEnabled),
     buildSendToCodexToggleItem(sendToCodexEnabled),
+    buildSendToCodexSettingsItem(),
     buildManageProfilesItem()
   );
 
@@ -233,7 +242,7 @@ function showProfileSwitchQuickPick(
       }
     };
 
-    quickPick.title = 'Codex Switch';
+    quickPick.title = 'Codex Multitool';
     quickPick.placeholder = 'Switch profile';
     quickPick.matchOnDescription = true;
     quickPick.matchOnDetail = true;

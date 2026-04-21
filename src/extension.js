@@ -150,7 +150,7 @@ function activate(context) {
       const accountLabel =
         email ? ` (${email})` : '';
       const selection = await vscode.window.showInformationMessage(
-        `Current Codex account${accountLabel} is not saved in Codex Switch.`,
+        `Current Codex account${accountLabel} is not saved in Codex Multitool.`,
         addLabel,
         manageLabel
       );

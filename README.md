@@ -1,7 +1,7 @@
 ![ezgif-666ed7ed9c4d2843](https://github.com/user-attachments/assets/17727aad-e997-42b6-8c34-e566323cedef)
 
 
-# Codex Tool 3 in 1
+# Codex Multitool
 
 Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.
 
@@ -33,7 +33,7 @@ GitHub project: https://github.com/void2byte/SendToCodex
 
 ## Codex profiles and limits
 
-- Use `Codex Switch: Manage Profiles` to import accounts from the current `~/.codex/auth.json`, from another file, or from a previous exported profile bundle.
+- Use `Codex Multitool: Manage Profiles` to import accounts from the current `~/.codex/auth.json`, from another file, or from a previous exported profile bundle.
 - The account status bar item shows compact 5-hour and weekly limit state for the active account.
 - The profile switcher QuickPick shows each saved account with compact per-profile limit state, plus toggles for VS Code reload-after-switch and Send to Codex on or off.
 - `Codex Rate Limit: Show Details` opens a panel with the active profile's latest observed limit windows plus a summary table for every saved profile.
@@ -83,8 +83,8 @@ The selection-sending status bar buttons are disabled by default and exist as a 
 
 When working on this repository, connect the current folder to VS Code as a development extension instead of rebuilding a VSIX for every change.
 
-- In this workspace, press `F5` and use `Run Codex Terminal Recorder`; `.vscode/launch.json` passes `--extensionDevelopmentPath=${workspaceFolder}`.
-- Use `Terminal: Run Task` -> `Open Codex Tool Extension Host` to open a new VS Code window with this folder loaded as the development extension.
+- In this workspace, press `F5` and use `Run Codex Multitool`; `.vscode/launch.json` passes `--extensionDevelopmentPath=${workspaceFolder}`.
+- Use `Terminal: Run Task` -> `Open Codex Multitool Extension Host` to open a new VS Code window with this folder loaded as the development extension.
 - From a terminal, you can also run `code --extensionDevelopmentPath "<repo path>" --enable-proposed-api=screph.codex-terminal-recorder`.
 
 ## Commands
@@ -98,12 +98,12 @@ When working on this repository, connect the current folder to VS Code as a deve
 - `Send to Codex: Open Settings`
 - `Send to Codex: Toggle Diagnostics Logging`
 - `Send to Codex: Toggle Diagnostics Log File`
-- `Codex Switch: Manage Profiles`
-- `Codex Switch: Switch Profile`
-- `Codex Switch: Login via Codex CLI`
-- `Codex Switch: Re-authenticate Active Profile`
-- `Codex Switch: Export Profiles`
-- `Codex Switch: Import Profiles`
+- `Codex Multitool: Manage Profiles`
+- `Codex Multitool: Switch Profile`
+- `Codex Multitool: Login via Codex CLI`
+- `Codex Multitool: Re-authenticate Active Profile`
+- `Codex Multitool: Export Profiles`
+- `Codex Multitool: Import Profiles`
 - `Codex Rate Limit: Refresh Statistics`
 - `Codex Rate Limit: Show Details`
 
@@ -150,4 +150,4 @@ Windows is supported out of the box. On macOS, native popups and clipboard chang
 
 Existing terminal scrollback is not backfilled. Capture starts after the extension begins tracking a terminal and new output is produced. If the raw data stream is unavailable in a particular VS Code build, the extension falls back to shell integration command capture. If that still does not provide enough data, opening the active terminal log or sending terminal context can trigger an on-demand snapshot of the visible terminal buffer.
 
-If Codex reports that a refresh token was revoked, run `Codex Switch: Re-authenticate Active Profile`. The command clears the current Codex auth with `codex logout`, starts `codex login`, and then updates the saved profile from the new `auth.json`.
+If Codex reports that a refresh token was revoked, run `Codex Multitool: Re-authenticate Active Profile`. The command clears the current Codex auth with `codex logout`, starts `codex login`, and then updates the saved profile from the new `auth.json`.

@@ -1,6 +1,7 @@
 node_modules
 .codex-terminal-logs/
 .npm-cache/
+.vscode-test/
 *.vsix
 .DS_Store
 DerivedData/

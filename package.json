@@ -1,6 +1,6 @@
 {
   "name": "codex-terminal-recorder",
-  "displayName": "Codex Tool 3 in 1",
+  "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
   "version": "0.0.6",
   "publisher": "screph",
@@ -100,51 +100,51 @@
       },
       {
         "command": "codex-switch.login",
-        "title": "Codex Switch: Login"
+        "title": "Codex Multitool: Login"
       },
       {
         "command": "codex-switch.profile.manage",
-        "title": "Codex Switch: Manage Profiles"
+        "title": "Codex Multitool: Manage Profiles"
       },
       {
         "command": "codex-switch.profile.login",
-        "title": "Codex Switch: Login via Codex CLI"
+        "title": "Codex Multitool: Login via Codex CLI"
       },
       {
         "command": "codex-switch.profile.reauthenticate",
-        "title": "Codex Switch: Re-authenticate Active Profile"
+        "title": "Codex Multitool: Re-authenticate Active Profile"
       },
       {
         "command": "codex-switch.profile.switch",
-        "title": "Codex Switch: Switch Profile"
+        "title": "Codex Multitool: Switch Profile"
       },
       {
         "command": "codex-switch.profile.toggleLast",
-        "title": "Codex Switch: Toggle Last Profile"
+        "title": "Codex Multitool: Toggle Last Profile"
       },
       {
         "command": "codex-switch.profile.addFromCodexAuthFile",
-        "title": "Codex Switch: Add Profile from Current auth.json"
+        "title": "Codex Multitool: Add Profile from Current auth.json"
       },
       {
         "command": "codex-switch.profile.addFromFile",
-        "title": "Codex Switch: Add Profile from File"
+        "title": "Codex Multitool: Add Profile from File"
       },
       {
         "command": "codex-switch.profile.exportSettings",
-        "title": "Codex Switch: Export Profiles"
+        "title": "Codex Multitool: Export Profiles"
       },
       {
         "command": "codex-switch.profile.importSettings",
-        "title": "Codex Switch: Import Profiles"
+        "title": "Codex Multitool: Import Profiles"
       },
       {
         "command": "codex-switch.profile.rename",
-        "title": "Codex Switch: Rename Profile"
+        "title": "Codex Multitool: Rename Profile"
       },
       {
         "command": "codex-switch.profile.delete",
-        "title": "Codex Switch: Delete Profile"
+        "title": "Codex Multitool: Delete Profile"
       },
       {
         "command": "codex-ratelimit.refreshStats",
@@ -321,7 +321,7 @@
         }
       },
       {
-        "title": "Codex Switch",
+        "title": "Codex Multitool",
         "properties": {
           "codexSwitch.debugLogging": {
             "type": "boolean",
