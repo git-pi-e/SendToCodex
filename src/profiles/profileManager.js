@@ -198,6 +198,10 @@ class ProfileManager {
     this.context = context;
     this.logger = logger;
     this.lastSyncedProfileId = undefined;
+    this.windowActiveProfileInitialized = false;
+    this.windowActiveHasAuth = false;
+    this.windowActiveProfileId = undefined;
+    this.windowActiveProfileActivatedAt = undefined;
     this.onDidChangeEmitter = new vscode.EventEmitter();
     this.onDidChange = this.onDidChangeEmitter.event;
   }
@@ -686,6 +690,47 @@ class ProfileManager {
     };
   }
 
+  async initializeWindowActiveProfileFromCurrentAuth(force = false) {
+    if (this.windowActiveProfileInitialized && !force) {
+      return {
+        hasAuth: this.windowActiveHasAuth,
+        profileId: this.windowActiveProfileId
+      };
+    }
+
+    const authData = await this.loadCurrentAuthData();
+    this.windowActiveProfileInitialized = true;
+
+    if (!authData) {
+      this.windowActiveHasAuth = false;
+      this.windowActiveProfileId = undefined;
+      this.windowActiveProfileActivatedAt = undefined;
+      return {
+        hasAuth: false,
+        profileId: undefined
+      };
+    }
+
+    const match = await this.findProfileMatchingAuthData(authData);
+    this.windowActiveHasAuth = true;
+    this.windowActiveProfileId = match ? match.id : undefined;
+    this.windowActiveProfileActivatedAt = match
+      ? this.getAuthFileModifiedAt() || Date.now()
+      : undefined;
+    if (match) {
+      this.lastSyncedProfileId = match.id;
+    }
+
+    return {
+      hasAuth: true,
+      profileId: this.windowActiveProfileId
+    };
+  }
+
+  async getWindowActiveProfileMatch() {
+    return this.initializeWindowActiveProfileFromCurrentAuth();
+  }
+
   async findDuplicateProfile(authData) {
     return this.findProfileMatchingAuthData(authData);
   }
@@ -1020,90 +1065,18 @@ class ProfileManager {
   }
 
   async getActiveProfileId() {
-    const currentAuthMatch = await this.getCurrentAuthProfileMatch();
-
-    if (this.isRemoteFilesMode()) {
-      const explicit = this.readSharedActiveProfile();
-      const explicitProfileId = explicit && explicit.profileId;
-
-      if (currentAuthMatch.hasAuth) {
-        if (!currentAuthMatch.profileId) {
-          return undefined;
-        }
-
-        if (explicitProfileId !== currentAuthMatch.profileId) {
-          const authModifiedAt = this.getAuthFileModifiedAt();
-          this.writeSharedActiveProfile(
-            currentAuthMatch.profileId,
-            authModifiedAt ? new Date(authModifiedAt).toISOString() : getNowIso()
-          );
-        }
-        return currentAuthMatch.profileId;
-      }
-
-      return undefined;
-    }
-
-    const bucket = this.getStateBucket();
-    const current = bucket.get(ACTIVE_PROFILE_KEY);
-    if (currentAuthMatch.hasAuth) {
-      if (!currentAuthMatch.profileId) {
-        return undefined;
-      }
-
-      if (current !== currentAuthMatch.profileId) {
-        await bucket.update(ACTIVE_PROFILE_KEY, currentAuthMatch.profileId);
-        await bucket.update(OLD_ACTIVE_PROFILE_KEY, undefined);
-        const authModifiedAt = this.getAuthFileModifiedAt();
-        await bucket.update(
-          ACTIVE_PROFILE_SET_AT_KEY,
-          authModifiedAt || Date.now()
-        );
-      }
-
-      return currentAuthMatch.profileId;
-    }
-
-    if (current) {
-      return undefined;
-    }
-
-    const legacyBucket = this.getLegacyStateBucket();
-    const old = bucket.get(OLD_ACTIVE_PROFILE_KEY) || legacyBucket.get(OLD_ACTIVE_PROFILE_KEY);
-    if (old) {
-      await bucket.update(OLD_ACTIVE_PROFILE_KEY, undefined);
-      await legacyBucket.update(OLD_ACTIVE_PROFILE_KEY, undefined);
-    }
-
-    return undefined;
+    const windowActive = await this.getWindowActiveProfileMatch();
+    return windowActive.profileId;
   }
 
   async getActiveProfileActivatedAt() {
-    if (this.isRemoteFilesMode()) {
-      const shared = this.readSharedActiveProfile();
-      if (shared && shared.updatedAt) {
-        const timestamp = Date.parse(shared.updatedAt);
-        if (Number.isFinite(timestamp)) {
-          return timestamp;
-        }
-      }
-      return undefined;
-    }
-
-    const bucket = this.getStateBucket();
-    const stored = asTimestamp(bucket.get(ACTIVE_PROFILE_SET_AT_KEY));
-    if (stored) {
-      return stored;
-    }
-
-    return this.getAuthFileModifiedAt();
+    await this.getWindowActiveProfileMatch();
+    return this.windowActiveProfileActivatedAt;
   }
 
   async setActiveProfileId(profileId) {
     const bucket = this.getStateBucket();
-    const previous = this.isRemoteFilesMode()
-      ? await this.getActiveProfileId()
-      : bucket.get(ACTIVE_PROFILE_KEY) || bucket.get(OLD_ACTIVE_PROFILE_KEY);
+    const previous = await this.getActiveProfileId();
 
     let authData = null;
     let targetProfile = null;
@@ -1165,6 +1138,11 @@ class ProfileManager {
     } else if (profileId) {
       this.lastSyncedProfileId = profileId;
     }
+
+    this.windowActiveProfileInitialized = true;
+    this.windowActiveHasAuth = Boolean(profileId);
+    this.windowActiveProfileId = profileId || undefined;
+    this.windowActiveProfileActivatedAt = effectiveActivatedAt;
 
     this.emitChanged();
     return true;

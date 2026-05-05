@@ -121,7 +121,7 @@ function activate(context) {
     }
 
     try {
-      const currentAuthMatch = await profileManager.getCurrentAuthProfileMatch();
+      const currentAuthMatch = await profileManager.getWindowActiveProfileMatch();
       if (!currentAuthMatch.hasAuth) {
         lastUnmanagedAuthNoticeKey = undefined;
         return;

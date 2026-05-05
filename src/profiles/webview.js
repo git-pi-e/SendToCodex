@@ -5,7 +5,9 @@ const {
   formatAbsoluteTimestamp,
   formatResetText,
   getProfileRateStatus,
-  getWindowLabel
+  getWindowLabel,
+  isProfileWeeklyTokensLow,
+  sortProfilesForDisplay
 } = require('./profileStatus');
 const { formatTokenUsage } = require('./rateLimitParser');
 
@@ -105,15 +107,17 @@ class RateLimitDetailsPanel {
       return '<div class="empty">No saved profiles yet.</div>';
     }
 
-    const rows = profiles.map((profile) => {
+    const rows = sortProfilesForDisplay(profiles, activeProfileId, now).map((profile) => {
       const status = getProfileRateStatus(profile, now);
+      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
       const activeClass = profile.id === activeProfileId ? 'profile-row active' : 'profile-row';
+      const rowClass = `${activeClass}${weeklyTokensLow ? ' weekly-low' : ''}`;
       const profileName = profile.id === activeProfileId
         ? `<span class="active-profile-name">${escapeHtml(profile.name)}</span>`
         : escapeHtml(profile.name);
       return `
-        <tr class="${activeClass}">
-          <td>${profileName}${profile.id === activeProfileId ? ' <span class="badge active-badge">ACTIVE</span>' : ''}</td>
+        <tr class="${rowClass}">
+          <td>${profileName}${profile.id === activeProfileId ? ' <span class="badge active-badge">ACTIVE</span>' : ''}${weeklyTokensLow ? ' <span class="badge weekly-low-badge">W &lt; 5%</span>' : ''}</td>
           <td>${escapeHtml(profile.email || 'Unknown')}</td>
           <td>${escapeHtml(status.planText)}</td>
           <td>${escapeHtml(status.compactText)}</td>
@@ -310,6 +314,25 @@ class RateLimitDetailsPanel {
             .profile-row.active .badge {
               background: var(--vscode-charts-green, #2ea043);
               color: var(--vscode-editor-background);
+            }
+            .profile-row.weekly-low td {
+              background: rgba(128, 128, 128, 0.14);
+              background: color-mix(in srgb, var(--vscode-disabledForeground, #8c8c8c) 18%, transparent);
+              color: var(--vscode-disabledForeground, #8c8c8c);
+              border-bottom-color: var(--vscode-disabledForeground, #8c8c8c);
+            }
+            .profile-row.weekly-low td:first-child {
+              box-shadow: inset 3px 0 0 var(--vscode-disabledForeground, #8c8c8c);
+            }
+            .profile-row.weekly-low .active-profile-name {
+              color: var(--vscode-disabledForeground, #8c8c8c);
+            }
+            .profile-row.weekly-low .badge {
+              background: var(--vscode-disabledForeground, #8c8c8c);
+              color: var(--vscode-editor-background);
+            }
+            .weekly-low-badge {
+              font-weight: 700;
             }
             .empty {
               color: var(--vscode-descriptionForeground);

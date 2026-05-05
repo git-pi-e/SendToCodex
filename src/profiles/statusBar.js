@@ -3,13 +3,21 @@
 const vscode = require('vscode');
 const { areProfileFeaturesEnabled } = require('./featureFlags');
 const { createProfileTooltip } = require('./tooltipBuilder');
-const { formatCompactRateSummary, getProfileRateStatus } = require('./profileStatus');
+const {
+  formatCompactRateSummary,
+  getProfileRateStatus,
+  isProfileWeeklyTokensLow
+} = require('./profileStatus');
 
-function getStatusBarColor(percentage, cooldownActive) {
+function getStatusBarColor(percentage, cooldownActive, weeklyTokensLow = false) {
   const config = vscode.workspace.getConfiguration('codexRatelimit');
   const colorsEnabled = config.get('color.enable', true);
   if (!colorsEnabled) {
     return new vscode.ThemeColor('statusBarItem.foreground');
+  }
+
+  if (weeklyTokensLow) {
+    return new vscode.ThemeColor('disabledForeground');
   }
 
   const warningThreshold = config.get('color.warningThreshold', 70);
@@ -74,7 +82,11 @@ class ProfileStatusBarController {
     })}`;
     this.statusBarItem.command =
       allProfiles.length === 0 ? 'codex-switch.profile.manage' : 'codex-switch.profile.switch';
-    this.statusBarItem.color = getStatusBarColor(status.maxUsedPercent, status.cooldownActive);
+    this.statusBarItem.color = getStatusBarColor(
+      status.maxUsedPercent,
+      status.cooldownActive,
+      isProfileWeeklyTokensLow(activeProfile)
+    );
     this.statusBarItem.tooltip = createProfileTooltip(activeProfile, allProfiles);
     this.statusBarItem.show();
   }

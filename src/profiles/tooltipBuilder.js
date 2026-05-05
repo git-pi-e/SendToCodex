@@ -4,7 +4,9 @@ const vscode = require('vscode');
 const {
   formatCompactRateSummary,
   getProfileRateStatus,
-  formatPlanType
+  formatPlanType,
+  isProfileWeeklyTokensLow,
+  sortProfilesForDisplay
 } = require('./profileStatus');
 
 function escapeMarkdown(text) {
@@ -35,22 +37,19 @@ function createProfileTooltip(activeProfile, profiles) {
   } else {
     const activeId = activeProfile ? activeProfile.id : undefined;
     const now = Date.now();
-    const sortedProfiles = [...profiles].sort((left, right) => {
-      const leftActive = left.id === activeId;
-      const rightActive = right.id === activeId;
-      if (leftActive !== rightActive) {
-        return leftActive ? -1 : 1;
-      }
-      return left.name.localeCompare(right.name);
-    });
+    const sortedProfiles = sortProfilesForDisplay(profiles, activeId, now);
 
     for (const profile of sortedProfiles) {
-      const status = getProfileRateStatus(profile);
+      const status = getProfileRateStatus(profile, now);
       const switchUri = buildCommandUri('codex-switch.profile.activate', [profile.id]);
       const plan = escapeMarkdown(formatPlanType(profile.planType));
       const linkedName = `[${escapeMarkdown(profile.name)}](${switchUri})`;
       const email = profile.email && profile.email !== 'Unknown' ? ` - ${escapeMarkdown(profile.email)}` : '';
       const activePrefix = activeId === profile.id ? '**ACTIVE** ' : '';
+      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
+      const lowWeeklySuffix = weeklyTokensLow
+        ? ' - <span style="color: var(--vscode-disabledForeground)">W &lt; 5%</span>'
+        : '';
       const summary = escapeMarkdown(
         formatCompactRateSummary(status, now, {
           includePrimaryCountdown: true,
@@ -60,7 +59,7 @@ function createProfileTooltip(activeProfile, profiles) {
       );
 
       tooltip.appendMarkdown(
-        `* ${activePrefix}${linkedName} - ${plan} - ${summary}${email}\n`
+        `* ${activePrefix}${linkedName} - ${plan} - ${summary}${email}${lowWeeklySuffix}\n`
       );
     }
 

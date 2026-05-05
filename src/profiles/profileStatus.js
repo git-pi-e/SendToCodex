@@ -13,6 +13,8 @@ function normalizeNumber(value, fallback) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+const LOW_REMAINING_PERCENT_THRESHOLD = 5;
+
 function normalizePlanType(planType) {
   const normalized = String(planType || '').trim();
   if (!normalized) {
@@ -24,6 +26,29 @@ function normalizePlanType(planType) {
 function formatPlanType(planType) {
   const normalized = normalizePlanType(planType);
   return normalized === 'Unknown' ? normalized : normalized.toUpperCase();
+}
+
+function getPlanSortRank(planType) {
+  const normalized = normalizePlanType(planType).toLowerCase();
+  if (normalized.includes('enterprise')) {
+    return 60;
+  }
+  if (normalized.includes('team') || normalized.includes('business')) {
+    return 50;
+  }
+  if (normalized.includes('pro')) {
+    return 40;
+  }
+  if (normalized.includes('plus')) {
+    return 30;
+  }
+  if (normalized.includes('go')) {
+    return 20;
+  }
+  if (normalized.includes('free')) {
+    return 10;
+  }
+  return 0;
 }
 
 function formatDuration(durationMs) {
@@ -135,6 +160,85 @@ function getProfileRateStatus(profile, now = Date.now()) {
   };
 }
 
+function getRawWindowRemainingPercent(windowState, now = Date.now()) {
+  if (!windowState) {
+    return null;
+  }
+
+  if (!windowState.resetAt || windowState.resetAt <= now) {
+    return 100;
+  }
+
+  return Math.max(0, Math.min(100, 100 - windowState.usedPercent));
+}
+
+function getWindowRemainingPercent(windowState, now = Date.now()) {
+  const remainingPercent = getRawWindowRemainingPercent(windowState, now);
+  if (remainingPercent == null) {
+    return -1;
+  }
+
+  return remainingPercent < LOW_REMAINING_PERCENT_THRESHOLD ? 0 : Math.round(remainingPercent);
+}
+
+function isWindowLowRemaining(windowState, now = Date.now()) {
+  const remainingPercent = getRawWindowRemainingPercent(windowState, now);
+  return remainingPercent != null && remainingPercent < LOW_REMAINING_PERCENT_THRESHOLD;
+}
+
+function isProfileWeeklyTokensLow(profile, now = Date.now()) {
+  const status = getProfileRateStatus(profile, now);
+  return isWindowLowRemaining(status.secondary, now);
+}
+
+function getProfileDisplaySortKey(profile, now = Date.now()) {
+  const status = getProfileRateStatus(profile, now);
+  const planType = normalizePlanType(profile && profile.planType);
+  const weeklyTokensLow = isWindowLowRemaining(status.secondary, now);
+
+  return {
+    primaryRemainingPercent: weeklyTokensLow ? 0 : getWindowRemainingPercent(status.primary, now),
+    secondaryRemainingPercent: getWindowRemainingPercent(status.secondary, now),
+    planRank: getPlanSortRank(planType),
+    planType: planType.toLowerCase(),
+    name: String((profile && profile.name) || '').toLowerCase(),
+    weeklyTokensLow
+  };
+}
+
+function compareProfilesForDisplay(left, right, activeProfileId, now = Date.now()) {
+  const leftActive = Boolean(activeProfileId && left && left.id === activeProfileId);
+  const rightActive = Boolean(activeProfileId && right && right.id === activeProfileId);
+  if (leftActive !== rightActive) {
+    return leftActive ? -1 : 1;
+  }
+
+  const leftKey = getProfileDisplaySortKey(left, now);
+  const rightKey = getProfileDisplaySortKey(right, now);
+  const numericSorts = [
+    rightKey.primaryRemainingPercent - leftKey.primaryRemainingPercent,
+    rightKey.secondaryRemainingPercent - leftKey.secondaryRemainingPercent,
+    rightKey.planRank - leftKey.planRank
+  ];
+  const numericSort = numericSorts.find((value) => value !== 0);
+  if (numericSort) {
+    return numericSort;
+  }
+
+  const planSort = leftKey.planType.localeCompare(rightKey.planType);
+  if (planSort !== 0) {
+    return planSort;
+  }
+
+  return leftKey.name.localeCompare(rightKey.name);
+}
+
+function sortProfilesForDisplay(profiles, activeProfileId, now = Date.now()) {
+  return [...(profiles || [])].sort((left, right) => {
+    return compareProfilesForDisplay(left, right, activeProfileId, now);
+  });
+}
+
 function formatAbsoluteTimestamp(timestamp) {
   const normalized = normalizeTimestamp(timestamp);
   if (!normalized) {
@@ -201,6 +305,7 @@ function formatCompactRateSummary(status, now = Date.now(), options = {}) {
 }
 
 module.exports = {
+  compareProfilesForDisplay,
   formatAbsoluteTimestamp,
   formatCompactRateSummary,
   formatCompactWindow,
@@ -209,7 +314,11 @@ module.exports = {
   formatResetText,
   formatWindowCountdown,
   formatWindowMinutes,
+  getProfileDisplaySortKey,
   getProfileRateStatus,
   getWindowLabel,
-  normalizeTimestamp
+  getWindowRemainingPercent,
+  isProfileWeeklyTokensLow,
+  normalizeTimestamp,
+  sortProfilesForDisplay
 };

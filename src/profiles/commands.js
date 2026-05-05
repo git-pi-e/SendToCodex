@@ -18,7 +18,9 @@ const { areProfileFeaturesEnabled } = require('./featureFlags');
 const {
   formatCompactRateSummary,
   formatPlanType,
-  getProfileRateStatus
+  getProfileRateStatus,
+  isProfileWeeklyTokensLow,
+  sortProfilesForDisplay
 } = require('./profileStatus');
 const { RateLimitDetailsPanel } = require('./webview');
 
@@ -55,14 +57,20 @@ async function getProfileAuthState(profileManager, profileId) {
 }
 
 async function buildProfileQuickPickItems(profiles, activeProfileId, profileManager) {
-  const items = await Promise.all(profiles.map(async (profile) => {
-    const status = getProfileRateStatus(profile);
+  const now = Date.now();
+  const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now);
+  return Promise.all(sortedProfiles.map(async (profile) => {
+    const status = getProfileRateStatus(profile, now);
     const descriptionParts = [];
     const authState = await getProfileAuthState(profileManager, profile.id);
     const isActive = profile.id === activeProfileId;
+    const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
 
     if (isActive) {
       descriptionParts.push('ACTIVE PROFILE');
+    }
+    if (weeklyTokensLow) {
+      descriptionParts.push('W < 5%');
     }
     if (authState.description) {
       descriptionParts.push(authState.description);
@@ -77,23 +85,20 @@ async function buildProfileQuickPickItems(profiles, activeProfileId, profileMana
       description: descriptionParts.length ? descriptionParts.join(' • ') : undefined,
       detail: authState.hasIssue
         ? `${isActive ? 'Currently selected • ' : ''}Restore the matching auth.json for this account`
-        : `${isActive ? 'Currently selected • ' : ''}${formatCompactRateSummary(status, Date.now(), {
+        : `${isActive ? 'Currently selected • ' : ''}${formatCompactRateSummary(status, now, {
             includePrimaryCountdown: true,
             includeSecondaryCountdown: true,
             percentageMode: 'remaining'
           })}`,
       profileId: profile.id,
       isActive,
+      iconPath: weeklyTokensLow
+        ? new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('disabledForeground'))
+        : undefined,
+      weeklyTokensLow,
       alwaysShow: isActive
     };
   }));
-
-  return items.sort((left, right) => {
-    if (left.isActive !== right.isActive) {
-      return left.isActive ? -1 : 1;
-    }
-    return left.label.localeCompare(right.label);
-  });
 }
 
 async function buildAddCurrentProfileItem(profileManager) {
