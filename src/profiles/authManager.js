@@ -60,8 +60,14 @@ function parseJwt(token, logger) {
         error: error && error.message ? error.message : String(error)
       });
     }
-    return {};
+    return null;
   }
+}
+
+function getMissingRequiredTokenFields(tokens) {
+  return ['id_token', 'access_token', 'refresh_token'].filter((field) => {
+    return !asNonEmptyString(tokens && tokens[field]);
+  });
 }
 
 function getDefaultCodexHomePath() {
@@ -120,24 +126,57 @@ async function loadAuthDataFromFile(authPath, logger) {
     const authContent = fs.readFileSync(authPath, 'utf8');
     const authJson = JSON.parse(authContent);
     if (!authJson || typeof authJson !== 'object' || !authJson.tokens) {
+      if (logger) {
+        logger.warn('Codex auth.json does not contain a tokens object.', { authPath });
+      }
+      return null;
+    }
+
+    const missingTokenFields = getMissingRequiredTokenFields(authJson.tokens);
+    if (missingTokenFields.length) {
+      if (logger) {
+        logger.warn('Codex auth.json is incomplete and cannot be used yet.', {
+          authPath,
+          missingTokenFields
+        });
+      }
       return null;
     }
 
     const idTokenPayload = parseJwt(authJson.tokens.id_token, logger);
+    if (!idTokenPayload) {
+      if (logger) {
+        logger.warn('Codex auth.json contains an unreadable id_token.', { authPath });
+      }
+      return null;
+    }
+
     const authPayload = idTokenPayload['https://api.openai.com/auth'] || {};
     const defaultOrganization = getDefaultOrganization(authPayload);
+    const email = asNonEmptyString(idTokenPayload.email) || 'Unknown';
+    const accountId = asNonEmptyString(authJson.tokens.account_id);
+    const chatgptUserId = asNonEmptyString(authPayload.chatgpt_user_id);
+    const userId = asNonEmptyString(authPayload.user_id);
+    const subject = asNonEmptyString(idTokenPayload.sub);
+
+    if (!accountId && !chatgptUserId && !userId && !subject && email === 'Unknown') {
+      if (logger) {
+        logger.warn('Codex auth.json does not contain a usable account identity.', { authPath });
+      }
+      return null;
+    }
 
     return {
       idToken: authJson.tokens.id_token,
       accessToken: authJson.tokens.access_token,
       refreshToken: authJson.tokens.refresh_token,
-      accountId: authJson.tokens.account_id,
+      accountId,
       defaultOrganizationId: defaultOrganization.id,
       defaultOrganizationTitle: defaultOrganization.title,
-      chatgptUserId: asNonEmptyString(authPayload.chatgpt_user_id),
-      userId: asNonEmptyString(authPayload.user_id),
-      subject: asNonEmptyString(idTokenPayload.sub),
-      email: idTokenPayload.email || 'Unknown',
+      chatgptUserId,
+      userId,
+      subject,
+      email,
       planType: authPayload.chatgpt_plan_type || 'Unknown',
       authJson
     };

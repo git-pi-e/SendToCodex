@@ -10,6 +10,7 @@ const {
   sortProfilesForDisplay
 } = require('./profileStatus');
 const { formatTokenUsage } = require('./rateLimitParser');
+const { displayProfileEmail, displayProfileName } = require('./privacy');
 
 function escapeHtml(value) {
   return String(value || '')
@@ -18,6 +19,26 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function formatRefreshResult(result) {
+  if (!result) {
+    return 'n/a';
+  }
+
+  const parts = [
+    `${result.source || 'unknown'} / ${result.outcome || 'unknown'}`
+  ];
+  if (result.sourceFile) {
+    parts.push(String(result.sourceFile));
+  }
+  if (result.error) {
+    parts.push(String(result.error));
+  }
+  if (result.timestamp) {
+    parts.push(new Date(result.timestamp).toLocaleString());
+  }
+  return parts.join(' - ');
 }
 
 class RateLimitDetailsPanel {
@@ -112,13 +133,14 @@ class RateLimitDetailsPanel {
       const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
       const activeClass = profile.id === activeProfileId ? 'profile-row active' : 'profile-row';
       const rowClass = `${activeClass}${weeklyTokensLow ? ' weekly-low' : ''}`;
+      const visibleProfileName = displayProfileName(profile);
       const profileName = profile.id === activeProfileId
-        ? `<span class="active-profile-name">${escapeHtml(profile.name)}</span>`
-        : escapeHtml(profile.name);
+        ? `<span class="active-profile-name">${escapeHtml(visibleProfileName)}</span>`
+        : escapeHtml(visibleProfileName);
       return `
         <tr class="${rowClass}">
           <td>${profileName}${profile.id === activeProfileId ? ' <span class="badge active-badge">ACTIVE</span>' : ''}${weeklyTokensLow ? ' <span class="badge weekly-low-badge">W &lt; 5%</span>' : ''}</td>
-          <td>${escapeHtml(profile.email || 'Unknown')}</td>
+          <td>${escapeHtml(displayProfileEmail(profile.email || 'Unknown'))}</td>
           <td>${escapeHtml(status.planText)}</td>
           <td>${escapeHtml(status.compactText)}</td>
           <td>${status.cooldownUntil ? escapeHtml(formatAbsoluteTimestamp(status.cooldownUntil)) : 'n/a'}</td>
@@ -156,6 +178,9 @@ class RateLimitDetailsPanel {
     const activeStatus = activeProfile ? getProfileRateStatus(activeProfile, now) : null;
     const lastObservation = this.rateLimitMonitor.getLastObservation();
     const lastError = this.rateLimitMonitor.getLastError();
+    const lastRefreshResult = this.rateLimitMonitor.getLastRefreshResult
+      ? this.rateLimitMonitor.getLastRefreshResult()
+      : null;
 
     const activeWindowsHtml = activeProfile
       ? [
@@ -178,7 +203,10 @@ class RateLimitDetailsPanel {
               formatTokenUsage(lastObservation.lastUsage)
             )}</div>
             <div class="window-line"><strong>Source:</strong> ${escapeHtml(
-              lastObservation.filePath
+              lastObservation.filePath ||
+                (lastRefreshResult && lastRefreshResult.source === 'usageApi'
+                  ? 'Usage API'
+                  : 'n/a')
             )}</div>
           </div>
         `
@@ -350,7 +378,7 @@ class RateLimitDetailsPanel {
                   </div>
                   <div class="subtitle">${
                     activeProfile
-                      ? `${escapeHtml(activeProfile.name)} - ${escapeHtml(activeStatus.compactText)}`
+                      ? `${escapeHtml(displayProfileName(activeProfile))} - ${escapeHtml(activeStatus.compactText)}`
                       : 'No active profile selected'
                   }</div>
                 </div>
@@ -360,6 +388,13 @@ class RateLimitDetailsPanel {
                 lastError
                   ? `<div class="window-line error"><strong>Monitor:</strong> ${escapeHtml(
                       lastError
+                    )}</div>`
+                  : ''
+              }
+              ${
+                lastRefreshResult
+                  ? `<div class="window-line"><strong>Monitor source:</strong> ${escapeHtml(
+                      formatRefreshResult(lastRefreshResult)
                     )}</div>`
                   : ''
               }

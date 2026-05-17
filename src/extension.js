@@ -22,6 +22,7 @@ const { registerProfileCommands } = require('./profiles/commands');
 const { areProfileFeaturesEnabled } = require('./profiles/featureFlags');
 const { ProfileManager } = require('./profiles/profileManager');
 const { RateLimitMonitor } = require('./profiles/rateLimitMonitor');
+const { displayAccountLabel } = require('./profiles/privacy');
 const { NativeSelectionOverlayController } = require('./ui/NativeSelectionOverlayController');
 const { EditorSelectionStatusBarController } = require('./ui/EditorSelectionStatusBarController');
 const { ProfileStatusBarController } = require('./profiles/statusBar');
@@ -29,6 +30,7 @@ const { SelectionPopupSuppression } = require('./ui/SelectionPopupSuppression');
 const { TerminalSelectionStatusBarController } = require('./ui/TerminalSelectionStatusBarController');
 
 const CODEX_POST_SWITCH_WARMUP_KEY = 'codexSwitch.pendingCodexPostSwitchWarmup';
+const AUTH_WATCHER_SETTLE_TIMEOUT_MS = 15 * 1000;
 
 function activate(context) {
   const output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
@@ -90,6 +92,7 @@ function activate(context) {
   context.subscriptions.push(statusBarController);
 
   let latestProfileUiRefreshId = 0;
+  let latestAuthWatcherRefreshId = 0;
   let lastUnmanagedAuthNoticeKey;
   let unmanagedAuthNoticeInFlight = false;
   let acceptWindowAuthChangesUntil = 0;
@@ -193,7 +196,7 @@ function activate(context) {
     }
 
     try {
-      const currentAuthMatch = await profileManager.getWindowActiveProfileMatch();
+      const currentAuthMatch = await profileManager.getCurrentAuthProfileMatch();
       if (!currentAuthMatch.hasAuth) {
         lastUnmanagedAuthNoticeKey = undefined;
         return;
@@ -216,14 +219,8 @@ function activate(context) {
 
       const addLabel = 'Add current profile';
       const manageLabel = 'Manage profiles';
-      const email =
-        authData && typeof authData.email === 'string' && authData.email !== 'Unknown'
-          ? authData.email.trim().replace(/\s+/g, ' ')
-          : '';
-      const accountLabel =
-        email ? ` (${email})` : '';
       const selection = await vscode.window.showInformationMessage(
-        `Current Codex account${accountLabel} is not saved in Codex Multitool.`,
+        `Current Codex account${displayAccountLabel(authData)} is not saved in Codex Multitool.`,
         addLabel,
         manageLabel
       );
@@ -277,6 +274,7 @@ function activate(context) {
       }
 
       profileStatusBarController.update(activeProfile, profiles);
+      void maybeNotifyUnmanagedCurrentProfile();
     } catch (error) {
       logger.error('Failed to refresh the Codex profile status UI.', {
         error: error && error.message ? error.message : String(error)
@@ -291,7 +289,33 @@ function activate(context) {
       return;
     }
 
-    if (event.source === 'auth' && shouldAcceptAuthChangeForThisWindow()) {
+    let shouldAcceptAuthChange = false;
+    if (event.source === 'auth') {
+      const authRefreshId = ++latestAuthWatcherRefreshId;
+      shouldAcceptAuthChange = shouldAcceptAuthChangeForThisWindow();
+      const readiness = await profileManager.waitForCurrentAuthData({
+        timeoutMs: AUTH_WATCHER_SETTLE_TIMEOUT_MS,
+        intervalMs: 500,
+        stableMs: 250
+      });
+      if (authRefreshId !== latestAuthWatcherRefreshId) {
+        return;
+      }
+
+      if (readiness.authData) {
+        logger.info('Codex auth.json watcher settled on a valid account.', {
+          authPath: readiness.authPath,
+          waitedMs: readiness.waitedMs
+        });
+      } else {
+        logger.warn('Codex auth.json watcher did not see a valid account before refresh.', {
+          authPath: readiness.authPath,
+          waitedMs: readiness.waitedMs
+        });
+      }
+    }
+
+    if (event.source === 'auth' && shouldAcceptAuthChange) {
       acceptWindowAuthChangesUntil = 0;
       await profileManager.initializeWindowActiveProfileFromCurrentAuth(true);
     }

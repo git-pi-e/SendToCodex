@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.10",
+  "version": "0.0.13",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -113,6 +113,14 @@
       {
         "command": "codex-switch.profile.reauthenticate",
         "title": "Codex Multitool: Re-authenticate Active Profile"
+      },
+      {
+        "command": "codex-switch.profile.restoreAuthBackup",
+        "title": "Codex Multitool: Restore auth.json Backup"
+      },
+      {
+        "command": "codex-switch.profile.doctor",
+        "title": "Codex Multitool: Profile Doctor"
       },
       {
         "command": "codex-switch.profile.switch",
@@ -357,6 +365,45 @@
             "type": "boolean",
             "default": true,
             "description": "Reload the VS Code window immediately after switching the active Codex profile. This is the most reliable way to restart the official Codex extension with the selected auth.json."
+          },
+          "codexSwitch.maskProfileNames": {
+            "type": "boolean",
+            "default": false,
+            "description": "Hide saved Codex profile names in status bar, quick picks, tooltips, and diagnostics."
+          },
+          "codexSwitch.maskProfileEmails": {
+            "type": "boolean",
+            "default": false,
+            "description": "Hide Codex account email addresses in status bar, quick picks, tooltips, diagnostics, and details views."
+          },
+          "codexSwitch.lowUsageProfileSwitchBehavior": {
+            "type": "string",
+            "enum": [
+              "off",
+              "ask",
+              "auto"
+            ],
+            "default": "ask",
+            "description": "Choose what Codex Multitool does when the active profile is low on remaining 5H or weekly usage and another fresh profile is available.",
+            "enumDescriptions": [
+              "Do not suggest switching profiles.",
+              "Ask before switching to a profile with fresher usage.",
+              "Automatically switch to a profile with fresher usage."
+            ]
+          },
+          "codexSwitch.lowUsageSwitchThreshold": {
+            "type": "number",
+            "default": 5,
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Remaining usage percentage at or below which Codex Multitool suggests switching away from the active profile."
+          },
+          "codexSwitch.lowUsageSwitchFreshnessMinutes": {
+            "type": "number",
+            "default": 60,
+            "minimum": 1,
+            "maximum": 10080,
+            "description": "Maximum age, in minutes, for another profile's rate-limit observation before it can be suggested as a switch target."
           },
           "codexSwitch.statusBarClickBehavior": {
             "type": "string",

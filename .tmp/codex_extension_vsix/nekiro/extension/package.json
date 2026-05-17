@@ -1,0 +1,68 @@
+{
+  "name": "codex-acc-switcher",
+  "displayName": "Codex Acc Switcher",
+  "description": "Switch between Codex accounts directly from VS Code",
+  "version": "0.4.0",
+  "publisher": "nekiro",
+  "author": "nekiro",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codex-accounts.switch",
+        "title": "Codex: Switch Account",
+        "icon": "images/switch.svg"
+      },
+      {
+        "command": "codex-accounts.saveCurrent",
+        "title": "Codex: Save Current Account",
+        "icon": "images/save.svg"
+      },
+      {
+        "command": "codex-accounts.addNew",
+        "title": "Codex: Add New Account",
+        "icon": "images/add.svg"
+      },
+      {
+        "command": "codex-accounts.delete",
+        "title": "Codex: Delete Account",
+        "icon": "images/delete.svg"
+      },
+      {
+        "command": "codex-accounts.refresh",
+        "title": "Codex: Refresh Status",
+        "icon": "images/refresh.svg"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "node build.js --production",
+    "compile": "node build.js",
+    "watch": "node build.js --watch",
+    "package": "npx @vscode/vsce package",
+    "typecheck": "tsc -p ./ --noEmit"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "fs-extra": "^11.2.0"
+  }
+}

@@ -8,6 +8,7 @@ const {
   isProfileWeeklyTokensLow,
   sortProfilesForDisplay
 } = require('./profileStatus');
+const { displayProfileEmail, displayProfileName } = require('./privacy');
 
 function escapeMarkdown(text) {
   return String(text || '').replace(/\\/g, '\\\\').replace(/([`*_{}[\]()#+\-.!])/g, '\\$1');
@@ -43,8 +44,10 @@ function createProfileTooltip(activeProfile, profiles) {
       const status = getProfileRateStatus(profile, now);
       const switchUri = buildCommandUri('codex-switch.profile.activate', [profile.id]);
       const plan = escapeMarkdown(formatPlanType(profile.planType));
-      const linkedName = `[${escapeMarkdown(profile.name)}](${switchUri})`;
-      const email = profile.email && profile.email !== 'Unknown' ? ` - ${escapeMarkdown(profile.email)}` : '';
+      const linkedName = `[${escapeMarkdown(displayProfileName(profile))}](${switchUri})`;
+      const email = profile.email && profile.email !== 'Unknown'
+        ? ` - ${escapeMarkdown(displayProfileEmail(profile.email))}`
+        : '';
       const activePrefix = activeId === profile.id ? '**ACTIVE** ' : '';
       const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
       const lowWeeklySuffix = weeklyTokensLow

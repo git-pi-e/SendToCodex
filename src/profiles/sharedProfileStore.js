@@ -35,14 +35,11 @@ function ensureSharedStoreDirs() {
 }
 
 function readJsonFile(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) {
-      return null;
-    }
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
+  if (!fs.existsSync(filePath)) {
     return null;
   }
+
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
 function writeJsonFile(filePath, data) {
@@ -55,12 +52,8 @@ function writeJsonFile(filePath, data) {
 }
 
 function deleteFileIfExists(filePath) {
-  try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-  } catch {
-    // Ignore cleanup failures.
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
   }
 }
 

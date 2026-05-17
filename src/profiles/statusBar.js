@@ -8,6 +8,7 @@ const {
   getProfileRateStatus,
   isProfileWeeklyTokensLow
 } = require('./profileStatus');
+const { displayProfileName } = require('./privacy');
 
 function getStatusBarColor(percentage, cooldownActive, weeklyTokensLow = false) {
   const config = vscode.workspace.getConfiguration('codexRatelimit');
@@ -34,8 +35,11 @@ function getStatusBarColor(percentage, cooldownActive, weeklyTokensLow = false) 
   return new vscode.ThemeColor('statusBarItem.foreground');
 }
 
-function formatStatusBarProfileName(name) {
-  const normalized = String(name || '').trim();
+function formatStatusBarProfileName(profileOrName) {
+  const normalized =
+    typeof profileOrName === 'object'
+      ? displayProfileName(profileOrName)
+      : String(profileOrName || '').trim();
   if (!normalized) {
     return 'profile';
   }
@@ -75,7 +79,7 @@ class ProfileStatusBarController {
     }
 
     const status = getProfileRateStatus(activeProfile);
-    this.statusBarItem.text = `$(account) ${formatStatusBarProfileName(activeProfile.name)}: ${formatCompactRateSummary(status, Date.now(), {
+    this.statusBarItem.text = `$(account) ${formatStatusBarProfileName(activeProfile)}: ${formatCompactRateSummary(status, Date.now(), {
       includePrimaryCountdown: true,
       includeSecondaryCountdown: false,
       percentageMode: 'remaining'

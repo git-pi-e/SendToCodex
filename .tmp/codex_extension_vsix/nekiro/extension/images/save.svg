@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Person icon -->
+  <circle cx="6" cy="4" r="2.5" fill="currentColor"/>
+  <path d="M1 13 C1 9.5 11 9.5 11 13" fill="currentColor"/>
+  <!-- Save/floppy disk -->
+  <rect x="10.5" y="8.5" width="5" height="5" rx="0.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <rect x="11.5" y="8.5" width="3" height="2" fill="currentColor"/>
+  <rect x="11.5" y="11.5" width="3" height="1.5" rx="0.3" fill="currentColor"/>
+</svg>

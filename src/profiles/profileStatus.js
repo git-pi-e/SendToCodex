@@ -14,6 +14,7 @@ function normalizeNumber(value, fallback) {
 }
 
 const LOW_REMAINING_PERCENT_THRESHOLD = 5;
+const DEFAULT_PRIMARY_WINDOW_MINUTES = 5 * 60;
 
 function normalizePlanType(planType) {
   const normalized = String(planType || '').trim();
@@ -127,11 +128,12 @@ function getActiveLimitState(windowState, now) {
 }
 
 function getProfileRateStatus(profile, now = Date.now()) {
-  const primary = getActiveLimitState(profile && profile.rateLimitState && profile.rateLimitState.primary, now);
+  const rawPrimary = getActiveLimitState(profile && profile.rateLimitState && profile.rateLimitState.primary, now);
   const secondary = getActiveLimitState(
     profile && profile.rateLimitState && profile.rateLimitState.secondary,
     now
   );
+  const primary = applyWeeklyZeroToPrimary(rawPrimary, secondary, now);
   const activeResetTimes = [primary, secondary]
     .filter((windowState) => Boolean(windowState && windowState.active && windowState.resetAt))
     .map((windowState) => windowState.resetAt);
@@ -184,6 +186,27 @@ function getWindowRemainingPercent(windowState, now = Date.now()) {
 function isWindowLowRemaining(windowState, now = Date.now()) {
   const remainingPercent = getRawWindowRemainingPercent(windowState, now);
   return remainingPercent != null && remainingPercent < LOW_REMAINING_PERCENT_THRESHOLD;
+}
+
+function isWindowZeroRemaining(windowState, now = Date.now()) {
+  const remainingPercent = getRawWindowRemainingPercent(windowState, now);
+  return remainingPercent === 0;
+}
+
+function applyWeeklyZeroToPrimary(primary, secondary, now = Date.now()) {
+  if (!isWindowZeroRemaining(secondary, now)) {
+    return primary;
+  }
+
+  return {
+    usedPercent: 100,
+    resetAt: secondary.resetAt,
+    active: Boolean(secondary.resetAt && secondary.resetAt > now),
+    windowMinutes:
+      primary && primary.windowMinutes
+        ? primary.windowMinutes
+        : DEFAULT_PRIMARY_WINDOW_MINUTES
+  };
 }
 
 function isProfileWeeklyTokensLow(profile, now = Date.now()) {

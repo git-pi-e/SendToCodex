@@ -7,6 +7,7 @@ const vscode = require('vscode');
 const { randomUUID } = require('crypto');
 const { getDefaultCodexAuthPath, loadAuthDataFromFile } = require('./authManager');
 const { syncCodexAuthFile } = require('./codexAuthSync');
+const { displayProfileName } = require('./privacy');
 const {
   SHARED_ACTIVE_PROFILE_FILENAME,
   deleteFileIfExists,
@@ -22,6 +23,9 @@ const {
 
 const CURRENT_PROFILES_VERSION = 2;
 const PROFILES_FILENAME = 'profiles.json';
+const AUTH_BACKUPS_DIRNAME = 'auth-backups';
+const ACTIVITY_LOG_FILENAME = 'profile-activity.jsonl';
+const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
 const ACTIVE_PROFILE_KEY = 'codexSwitch.activeProfileId';
 const ACTIVE_PROFILE_SET_AT_KEY = 'codexSwitch.activeProfileSetAt';
 const LAST_PROFILE_KEY = 'codexSwitch.lastProfileId';
@@ -193,6 +197,38 @@ function getNowIso() {
   return new Date().toISOString();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sanitizePathPart(value) {
+  return String(value || 'item')
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'item';
+}
+
+function getTimestampFilePart() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function isUsageApiSource(sourceFile) {
+  return String(sourceFile || '').startsWith(USAGE_API_SOURCE_PREFIX);
+}
+
+function isUsageApiObservation(observation) {
+  return isUsageApiSource(observation && observation.filePath);
+}
+
+function shouldClearOptimisticUsageApiPrimary(rateLimitState) {
+  return Boolean(
+    rateLimitState &&
+      isUsageApiSource(rateLimitState.sourceFile) &&
+      rateLimitState.primary &&
+      clampPercent(rateLimitState.primary.usedPercent) <= 1
+  );
+}
+
 class ProfileManager {
   constructor(context, logger) {
     this.context = context;
@@ -202,6 +238,7 @@ class ProfileManager {
     this.windowActiveHasAuth = false;
     this.windowActiveProfileId = undefined;
     this.windowActiveProfileActivatedAt = undefined;
+    this.notifiedProfilesReadError = false;
     this.onDidChangeEmitter = new vscode.EventEmitter();
     this.onDidChange = this.onDidChangeEmitter.event;
   }
@@ -341,6 +378,14 @@ class ProfileManager {
     return path.join(this.getStorageDir(), PROFILES_FILENAME);
   }
 
+  getAuthBackupsDir() {
+    return path.join(this.getStorageDir(), AUTH_BACKUPS_DIRNAME);
+  }
+
+  getActivityLogPath() {
+    return path.join(this.getStorageDir(), ACTIVITY_LOG_FILENAME);
+  }
+
   ensureStorageDir() {
     if (this.isRemoteFilesMode()) {
       ensureSharedStoreDirs();
@@ -372,11 +417,18 @@ class ProfileManager {
       const raw = fs.readFileSync(filePath, 'utf8');
       return normalizeProfilesFile(raw);
     } catch (error) {
-      this.log('warn', 'Failed to read profiles.json, falling back to an empty list.', {
-        error: error && error.message ? error.message : String(error),
+      const message = error && error.message ? error.message : String(error);
+      this.log('error', 'Failed to read Codex profiles.json.', {
+        error: message,
         filePath
       });
-      return { version: CURRENT_PROFILES_VERSION, profiles: [] };
+      if (!this.notifiedProfilesReadError) {
+        this.notifiedProfilesReadError = true;
+        void vscode.window.showErrorMessage(
+          `Codex Multitool cannot read profiles.json at ${filePath}: ${message}`
+        );
+      }
+      throw new Error(`Failed to read Codex profiles.json at ${filePath}: ${message}`);
     }
   }
 
@@ -444,7 +496,11 @@ class ProfileManager {
 
     try {
       return JSON.parse(raw);
-    } catch {
+    } catch (error) {
+      this.log('error', 'Failed to parse stored Codex profile tokens.', {
+        profileId,
+        error: error && error.message ? error.message : String(error)
+      });
       return null;
     }
   }
@@ -476,6 +532,130 @@ class ProfileManager {
       return Math.round(stats.mtimeMs);
     } catch {
       return undefined;
+    }
+  }
+
+  ensureAuthBackupsDir() {
+    this.ensureStorageDir();
+    const backupsDir = this.getAuthBackupsDir();
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+    return backupsDir;
+  }
+
+  async backupCurrentAuth(reason = 'manual') {
+    const authPath = getDefaultCodexAuthPath(this.logger);
+    if (!fs.existsSync(authPath)) {
+      this.log('warn', 'Cannot back up Codex auth.json because it does not exist.', {
+        authPath,
+        reason
+      });
+      return null;
+    }
+
+    const backupsDir = this.ensureAuthBackupsDir();
+    const name = `auth-${getTimestampFilePart()}-${sanitizePathPart(reason)}.json`;
+    const backupPath = path.join(backupsDir, name);
+    fs.copyFileSync(authPath, backupPath);
+
+    const authData = await loadAuthDataFromFile(authPath, this.logger);
+    const metadataPath = `${backupPath}.meta.json`;
+    fs.writeFileSync(metadataPath, JSON.stringify({
+      createdAt: getNowIso(),
+      reason,
+      sourcePath: authPath,
+      email: authData && authData.email ? authData.email : undefined,
+      accountId: authData && authData.accountId ? authData.accountId : undefined,
+      defaultOrganizationId:
+        authData && authData.defaultOrganizationId ? authData.defaultOrganizationId : undefined
+    }, null, 2), 'utf8');
+
+    this.log('info', 'Backed up current Codex auth.json.', {
+      backupPath,
+      reason
+    });
+    return backupPath;
+  }
+
+  async listAuthBackups() {
+    const backupsDir = this.getAuthBackupsDir();
+    if (!fs.existsSync(backupsDir)) {
+      return [];
+    }
+
+    const entries = fs.readdirSync(backupsDir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && !entry.name.endsWith('.meta.json'))
+      .map((entry) => {
+        const backupPath = path.join(backupsDir, entry.name);
+        const stats = fs.statSync(backupPath);
+        let metadata = {};
+        try {
+          const metadataPath = `${backupPath}.meta.json`;
+          if (fs.existsSync(metadataPath)) {
+            metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+          }
+        } catch (error) {
+          this.log('warn', 'Failed to read Codex auth backup metadata.', {
+            backupPath,
+            error: error && error.message ? error.message : String(error)
+          });
+        }
+        return {
+          name: entry.name,
+          path: backupPath,
+          createdAt: metadata.createdAt || new Date(stats.mtimeMs).toISOString(),
+          reason: metadata.reason || 'unknown',
+          email: metadata.email,
+          accountId: metadata.accountId,
+          defaultOrganizationId: metadata.defaultOrganizationId
+        };
+      })
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+  }
+
+  async restoreAuthBackup(backupPath) {
+    if (!backupPath || !fs.existsSync(backupPath)) {
+      throw new Error('Selected Codex auth backup no longer exists.');
+    }
+
+    const authData = await loadAuthDataFromFile(backupPath, this.logger);
+    if (!authData) {
+      throw new Error('Selected Codex auth backup is not a valid auth.json.');
+    }
+
+    await this.backupCurrentAuth('before-restore');
+    const authPath = getDefaultCodexAuthPath(this.logger);
+    const authDir = path.dirname(authPath);
+    if (!fs.existsSync(authDir)) {
+      fs.mkdirSync(authDir, { recursive: true });
+    }
+    fs.copyFileSync(backupPath, authPath);
+    this.windowActiveProfileInitialized = false;
+    await this.appendProfileActivity('restoreAuthBackup', {
+      backupName: path.basename(backupPath),
+      restoredEmail: authData.email,
+      restoredAccountId: authData.accountId
+    });
+    this.emitChanged();
+    return authData;
+  }
+
+  async appendProfileActivity(action, data = {}) {
+    try {
+      this.ensureStorageDir();
+      const entry = {
+        timestamp: getNowIso(),
+        action,
+        ...data
+      };
+      fs.appendFileSync(this.getActivityLogPath(), `${JSON.stringify(entry)}\n`, 'utf8');
+    } catch (error) {
+      this.log('warn', 'Failed to write Codex profile activity log.', {
+        action,
+        error: error && error.message ? error.message : String(error)
+      });
     }
   }
 
@@ -739,6 +919,53 @@ class ProfileManager {
     return loadAuthDataFromFile(getDefaultCodexAuthPath(this.logger), this.logger);
   }
 
+  async waitForCurrentAuthData(options = {}) {
+    const timeoutMs = Math.max(0, Number(options.timeoutMs) || 0);
+    const intervalMs = Math.max(100, Number(options.intervalMs) || 500);
+    const stableMs = Math.max(0, Number(options.stableMs) || 250);
+    const requireModifiedAfter = Number(options.requireModifiedAfter) || 0;
+    const startedAt = Date.now();
+    const authPath = getDefaultCodexAuthPath(this.logger);
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const modifiedAt = this.getAuthFileModifiedAt();
+      if (requireModifiedAfter && (!modifiedAt || modifiedAt < requireModifiedAfter)) {
+        await sleep(intervalMs);
+        continue;
+      }
+
+      const authData = await this.loadCurrentAuthData();
+      if (authData) {
+        if (stableMs > 0) {
+          const beforeStableModifiedAt = this.getAuthFileModifiedAt();
+          await sleep(stableMs);
+          const afterStableModifiedAt = this.getAuthFileModifiedAt();
+          if (
+            beforeStableModifiedAt &&
+            afterStableModifiedAt &&
+            beforeStableModifiedAt !== afterStableModifiedAt
+          ) {
+            continue;
+          }
+        }
+
+        return {
+          authData,
+          authPath,
+          waitedMs: Date.now() - startedAt
+        };
+      }
+
+      await sleep(intervalMs);
+    }
+
+    return {
+      authData: await this.loadCurrentAuthData(),
+      authPath,
+      waitedMs: Date.now() - startedAt
+    };
+  }
+
   async promptForMatchingAuthFile(profile) {
     const selection = await vscode.window.showOpenDialog({
       canSelectMany: false,
@@ -758,7 +985,7 @@ class ProfileManager {
 
     if (profile && !this.matchesAuth(profile, authData)) {
       void vscode.window.showErrorMessage(
-        `Selected auth.json belongs to a different account and cannot restore profile "${profile.name}".`
+        `Selected auth.json belongs to a different account and cannot restore profile "${displayProfileName(profile)}".`
       );
       return null;
     }
@@ -781,7 +1008,7 @@ class ProfileManager {
     );
 
     const selection = await vscode.window.showWarningMessage(
-      `Profile "${(profile && profile.name) || profileId}" is missing tokens. Restoring requires the matching auth.json for that same account.`,
+      `Profile "${profile ? displayProfileName(profile) : profileId}" is missing tokens. Restoring requires the matching auth.json for that same account.`,
       { modal: true },
       ...(canRecoverFromRemote ? [recoverLabel] : []),
       ...(canRestoreFromCurrentAuth ? [importCurrentLabel] : []),
@@ -1113,13 +1340,22 @@ class ProfileManager {
       }
     }
 
+    const switchedAtIso = getNowIso();
+    const effectiveActivatedAt =
+      profileId ? activationTimestampMs || Date.parse(switchedAtIso) : undefined;
+
+    if (profileId && authData && !currentAuthMatchesTarget) {
+      await this.backupCurrentAuth('before-profile-switch');
+      syncCodexAuthFile(getDefaultCodexAuthPath(this.logger), authData);
+      this.lastSyncedProfileId = profileId;
+    } else if (profileId) {
+      this.lastSyncedProfileId = profileId;
+    }
+
     if (previous && profileId && previous !== profileId) {
       await this.setLastProfileId(previous);
     }
 
-    const switchedAtIso = getNowIso();
-    const effectiveActivatedAt =
-      profileId ? activationTimestampMs || Date.parse(switchedAtIso) : undefined;
     if (this.isRemoteFilesMode()) {
       if (profileId) {
         this.writeSharedActiveProfile(profileId, new Date(effectiveActivatedAt).toISOString());
@@ -1132,12 +1368,11 @@ class ProfileManager {
       await bucket.update(ACTIVE_PROFILE_SET_AT_KEY, effectiveActivatedAt);
     }
 
-    if (profileId && authData && !currentAuthMatchesTarget) {
-      syncCodexAuthFile(getDefaultCodexAuthPath(this.logger), authData);
-      this.lastSyncedProfileId = profileId;
-    } else if (profileId) {
-      this.lastSyncedProfileId = profileId;
-    }
+    await this.appendProfileActivity('setActiveProfile', {
+      profileId: profileId || null,
+      previousProfileId: previous || null,
+      changedAuthFile: Boolean(profileId && authData && !currentAuthMatchesTarget)
+    });
 
     this.windowActiveProfileInitialized = true;
     this.windowActiveHasAuth = Boolean(profileId);
@@ -1202,7 +1437,7 @@ class ProfileManager {
 
     const nextProfiles = file.profiles.map((profile) => {
       const currentRateLimitState = profile.rateLimitState || null;
-      const nextRateLimitState = currentRateLimitState
+      let nextRateLimitState = currentRateLimitState
         ? {
             ...currentRateLimitState,
             primary: currentRateLimitState.primary
@@ -1227,6 +1462,13 @@ class ProfileManager {
               : null
           }
         : null;
+
+      if (shouldClearOptimisticUsageApiPrimary(nextRateLimitState)) {
+        nextRateLimitState = {
+          ...nextRateLimitState,
+          primary: null
+        };
+      }
 
       const activeResetTimes = [nextRateLimitState && nextRateLimitState.primary, nextRateLimitState && nextRateLimitState.secondary]
         .filter((windowState) => Boolean(windowState && windowState.resetAt))
@@ -1271,11 +1513,51 @@ class ProfileManager {
 
     const profile = file.profiles[index];
     const now = Date.now();
+    const storedPrimary =
+      profile.rateLimitState && profile.rateLimitState.primary
+        ? profile.rateLimitState.primary
+        : null;
+    const storedPrimaryResetAt = storedPrimary ? asTimestamp(storedPrimary.resetAt) : null;
+    const storedPrimaryActive = Boolean(storedPrimaryResetAt && storedPrimaryResetAt > now);
+    const observedPrimary =
+      observation && observation.primary
+        ? observation.primary
+        : null;
+    const usageApiObservation = isUsageApiObservation(observation);
+    const observedPrimaryUsed = observedPrimary
+      ? clampPercent(observedPrimary.usedPercent)
+      : null;
+    const storedPrimaryUsed = storedPrimary
+      ? clampPercent(storedPrimary.usedPercent)
+      : null;
+    const shouldPreserveStoredPrimary =
+      usageApiObservation &&
+      observedPrimary &&
+      (
+        (
+          storedPrimaryActive &&
+          storedPrimaryUsed != null &&
+          observedPrimaryUsed < storedPrimaryUsed
+        ) ||
+        (!storedPrimary && observedPrimaryUsed <= 1)
+      );
+    const primaryForStorage = shouldPreserveStoredPrimary
+      ? storedPrimary
+      : observedPrimary;
+
+    if (shouldPreserveStoredPrimary) {
+      this.log('info', 'Ignored optimistic Usage API primary 5H observation.', {
+        profileId,
+        observedPrimaryUsed,
+        storedPrimaryUsed,
+        storedPrimaryResetAt
+      });
+    }
+
     const primaryResetAt =
-      observation &&
-      observation.primary &&
-      !observation.primary.outdated &&
-      asTimestamp(observation.primary.resetAt);
+      primaryForStorage &&
+      !primaryForStorage.outdated &&
+      asTimestamp(primaryForStorage.resetAt);
     const secondaryResetAt =
       observation &&
       observation.secondary &&
@@ -1292,11 +1574,11 @@ class ProfileManager {
       totalTokens:
         observation && observation.totalUsage ? observation.totalUsage.total_tokens : null,
       lastTokens: observation && observation.lastUsage ? observation.lastUsage.total_tokens : null,
-      primary: observation && observation.primary
+      primary: primaryForStorage
         ? {
-            usedPercent: observation.primary.usedPercent,
+            usedPercent: primaryForStorage.usedPercent,
             resetAt: primaryResetAt,
-            windowMinutes: observation.primary.windowMinutes
+            windowMinutes: primaryForStorage.windowMinutes
           }
         : null,
       secondary: observation && observation.secondary
