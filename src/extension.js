@@ -14,6 +14,14 @@ const { SelectionLocator } = require('./terminalSelection/SelectionLocator');
 const { TerminalLogManager } = require('./terminalLogs/TerminalLogManager');
 const { CodexAvailabilityController } = require('./codex/CodexAvailabilityController');
 const { CodexCommandClient } = require('./codex/CodexCommandClient');
+const {
+  DEFAULT_PENDING_WARMUP_MAX_AGE_MS,
+  DEFAULT_POST_SWITCH_WARMUP_DELAY_MS,
+  captureCurrentCodexChatContext,
+  isPendingCodexPostSwitchWarmupFresh,
+  isRestorableCodexChatContext,
+  warmUpCodexAfterProfileSwitch
+} = require('./codex/CodexPostSwitchWarmup');
 const { EditorSelectionCodexSender } = require('./codex/EditorSelectionCodexSender');
 const { ExplorerResourcesCodexSender } = require('./codex/ExplorerResourcesCodexSender');
 const { TerminalSelectionCodexSender } = require('./codex/TerminalSelectionCodexSender');
@@ -95,41 +103,79 @@ function activate(context) {
   let latestAuthWatcherRefreshId = 0;
   let lastUnmanagedAuthNoticeKey;
   let unmanagedAuthNoticeInFlight = false;
-  let acceptWindowAuthChangesUntil = 0;
+  let expectedWindowAuthChange;
 
-  const markWindowAuthChangeExpected = () => {
-    acceptWindowAuthChangesUntil = Math.max(
-      acceptWindowAuthChangesUntil,
-      Date.now() + 10 * 60 * 1000
-    );
+  const getExpectedWindowAuthChange = () => {
+    if (!expectedWindowAuthChange) {
+      return undefined;
+    }
+
+    if (expectedWindowAuthChange.expiresAt <= Date.now()) {
+      logger.warn('Expired expected Codex auth.json change marker.', {
+        expectedProfileId: expectedWindowAuthChange.profileId || null,
+        requestedAt: expectedWindowAuthChange.requestedAt
+      });
+      expectedWindowAuthChange = undefined;
+      return undefined;
+    }
+
+    return expectedWindowAuthChange;
   };
 
-  const shouldAcceptAuthChangeForThisWindow = () => {
-    if (vscode.window.state && vscode.window.state.focused) {
+  const markWindowAuthChangeExpected = (options = {}) => {
+    const profileId =
+      options && typeof options.profileId === 'string' && options.profileId.trim()
+        ? options.profileId.trim()
+        : undefined;
+    const requestedAt = Date.now();
+    expectedWindowAuthChange = {
+      profileId,
+      requestedAt,
+      expiresAt: requestedAt + 10 * 60 * 1000
+    };
+    logger.info('Expecting a Codex auth.json change for this VS Code window.', {
+      expectedProfileId: profileId || null,
+      expiresAt: expectedWindowAuthChange.expiresAt
+    });
+  };
+
+  const clearExpectedWindowAuthChange = () => {
+    expectedWindowAuthChange = undefined;
+  };
+
+  const shouldAcceptAuthChangeForThisWindow = async (authData) => {
+    const expected = getExpectedWindowAuthChange();
+    if (!expected) {
+      logger.info('Ignoring Codex auth.json watcher event that this window did not initiate.');
+      return false;
+    }
+
+    if (!expected.profileId) {
       return true;
     }
-    return acceptWindowAuthChangesUntil > Date.now();
+
+    const matchedProfile = authData
+      ? await profileManager.findProfileMatchingAuthData(authData)
+      : undefined;
+    if (matchedProfile && matchedProfile.id === expected.profileId) {
+      return true;
+    }
+
+    logger.warn('Ignoring Codex auth.json watcher event for an unexpected profile.', {
+      expectedProfileId: expected.profileId,
+      actualProfileId: matchedProfile ? matchedProfile.id : null
+    });
+    return false;
   };
 
-  const warmUpCodexAfterProfileSwitch = async (reason) => {
-    const codexExtension = vscode.extensions.getExtension('openai.chatgpt');
-    if (!codexExtension) {
-      return;
+  const getCodexChatContextForProfileSwitch = () => {
+    const contextToRestore = captureCurrentCodexChatContext(logger, {
+      fallbackToSidebar: true
+    });
+    if (isRestorableCodexChatContext(contextToRestore)) {
+      return contextToRestore;
     }
-
-    try {
-      if (!codexExtension.isActive) {
-        await codexExtension.activate();
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      await vscode.commands.executeCommand('chatgpt.openSidebar');
-      logger.info('Warmed up Codex after profile switch.', { reason });
-    } catch (error) {
-      logger.warn('Failed to warm up Codex after profile switch.', {
-        reason,
-        error: error && error.message ? error.message : String(error)
-      });
-    }
+    return undefined;
   };
 
   const scheduleCodexPostSwitchWarmup = async (profileId, options = {}) => {
@@ -137,17 +183,25 @@ function activate(context) {
       return;
     }
 
+    const restoreChatContext = getCodexChatContextForProfileSwitch();
     if (options.willReloadWindow) {
       await context.workspaceState.update(CODEX_POST_SWITCH_WARMUP_KEY, {
         profileId,
-        scheduledAt: Date.now()
+        scheduledAt: Date.now(),
+        restoreChatContext
+      });
+      logger.info('Scheduled Codex post-switch warm-up for the next VS Code activation.', {
+        profileId,
+        restoreChatKind: restoreChatContext ? restoreChatContext.kind : null
       });
       return;
     }
 
     setTimeout(() => {
-      void warmUpCodexAfterProfileSwitch('profile-switch-no-reload');
-    }, 1200);
+      void warmUpCodexAfterProfileSwitch('profile-switch-no-reload', logger, {
+        restoreChatContext
+      });
+    }, DEFAULT_POST_SWITCH_WARMUP_DELAY_MS);
   };
 
   const runPendingCodexPostSwitchWarmup = async () => {
@@ -157,13 +211,20 @@ function activate(context) {
     }
 
     await context.workspaceState.update(CODEX_POST_SWITCH_WARMUP_KEY, undefined);
-    if (Date.now() - Number(pending.scheduledAt) > 2 * 60 * 1000) {
+    if (!isPendingCodexPostSwitchWarmupFresh(pending, Date.now(), DEFAULT_PENDING_WARMUP_MAX_AGE_MS)) {
+      logger.warn('Skipped stale Codex post-switch warm-up.', {
+        profileId: pending.profileId || null,
+        scheduledAt: pending.scheduledAt,
+        maxAgeMs: DEFAULT_PENDING_WARMUP_MAX_AGE_MS
+      });
       return;
     }
 
     setTimeout(() => {
-      void warmUpCodexAfterProfileSwitch('profile-switch-after-reload');
-    }, 1200);
+      void warmUpCodexAfterProfileSwitch('profile-switch-after-reload', logger, {
+        restoreChatContext: pending.restoreChatContext
+      });
+    }, DEFAULT_POST_SWITCH_WARMUP_DELAY_MS);
   };
 
   const getCurrentAuthNoticeKey = (authData) => {
@@ -290,9 +351,9 @@ function activate(context) {
     }
 
     let shouldAcceptAuthChange = false;
+    let settledAuthData = null;
     if (event.source === 'auth') {
       const authRefreshId = ++latestAuthWatcherRefreshId;
-      shouldAcceptAuthChange = shouldAcceptAuthChangeForThisWindow();
       const readiness = await profileManager.waitForCurrentAuthData({
         timeoutMs: AUTH_WATCHER_SETTLE_TIMEOUT_MS,
         intervalMs: 500,
@@ -313,10 +374,12 @@ function activate(context) {
           waitedMs: readiness.waitedMs
         });
       }
+      settledAuthData = readiness.authData;
+      shouldAcceptAuthChange = await shouldAcceptAuthChangeForThisWindow(settledAuthData);
     }
 
     if (event.source === 'auth' && shouldAcceptAuthChange) {
-      acceptWindowAuthChangesUntil = 0;
+      clearExpectedWindowAuthChange();
       await profileManager.initializeWindowActiveProfileFromCurrentAuth(true);
     }
 
@@ -390,6 +453,14 @@ function activate(context) {
         `@ext:${context.extension.id}`
       );
     }),
+    vscode.commands.registerCommand(
+      'codexTerminalRecorder.internal.warmUpCodexAfterProfileSwitch',
+      async () => {
+        await warmUpCodexAfterProfileSwitch('manual-internal-command', logger, {
+          restoreChatContext: getCodexChatContextForProfileSwitch()
+        });
+      }
+    ),
     vscode.commands.registerCommand(
       'codexTerminalRecorder.toggleDiagnosticsLogging',
       async () => {

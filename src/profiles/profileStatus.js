@@ -15,6 +15,8 @@ function normalizeNumber(value, fallback) {
 
 const LOW_REMAINING_PERCENT_THRESHOLD = 5;
 const DEFAULT_PRIMARY_WINDOW_MINUTES = 5 * 60;
+const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
+const RATE_LIMIT_DISPLAY_FRESHNESS_MS = 60 * 60 * 1000;
 
 function normalizePlanType(planType) {
   const normalized = String(planType || '').trim();
@@ -127,12 +129,88 @@ function getActiveLimitState(windowState, now) {
   };
 }
 
-function getProfileRateStatus(profile, now = Date.now()) {
-  const rawPrimary = getActiveLimitState(profile && profile.rateLimitState && profile.rateLimitState.primary, now);
+function isUsageApiRateLimitState(rateLimitState) {
+  return Boolean(
+    rateLimitState &&
+      typeof rateLimitState.sourceFile === 'string' &&
+      rateLimitState.sourceFile.startsWith(USAGE_API_SOURCE_PREFIX)
+  );
+}
+
+function isFreshUsageApiRateLimitState(rateLimitState, now = Date.now()) {
+  if (!isUsageApiRateLimitState(rateLimitState)) {
+    return false;
+  }
+
+  const observedAt = normalizeTimestamp(rateLimitState.observedAt);
+  return Boolean(observedAt && now - observedAt <= RATE_LIMIT_DISPLAY_FRESHNESS_MS);
+}
+
+function isActiveProfileForRateDisplay(profile, options = {}) {
+  if (options.isActiveProfile === true) {
+    return true;
+  }
+
+  if (options.isActiveProfile === false) {
+    return false;
+  }
+
+  return Boolean(
+    options.activeProfileId &&
+      profile &&
+      profile.id &&
+      String(options.activeProfileId) === String(profile.id)
+  );
+}
+
+function getRateLimitSourceType(rateLimitState) {
+  if (!rateLimitState || !rateLimitState.sourceFile) {
+    return null;
+  }
+
+  return isUsageApiRateLimitState(rateLimitState) ? 'usageApi' : 'localSessions';
+}
+
+function getDisplayRateLimitState(profile, now = Date.now(), options = {}) {
+  const rateLimitState = profile && profile.rateLimitState ? profile.rateLimitState : null;
+  if (!rateLimitState) {
+    return null;
+  }
+
+  if (isActiveProfileForRateDisplay(profile, options)) {
+    return isFreshUsageApiRateLimitState(rateLimitState, now) ? rateLimitState : null;
+  }
+
+  return rateLimitState;
+}
+
+function getProfileRateStatus(profile, now = Date.now(), options = {}) {
+  const rateLimitState = getDisplayRateLimitState(profile, now, options);
+  const rawPrimary = getActiveLimitState(rateLimitState && rateLimitState.primary, now);
   const secondary = getActiveLimitState(
-    profile && profile.rateLimitState && profile.rateLimitState.secondary,
+    rateLimitState && rateLimitState.secondary,
     now
   );
+  if (!rateLimitState) {
+    return {
+      cooldownActive: false,
+      cooldownUntil: null,
+      compactText: 'n/a',
+      quickPickText: '[n/a]',
+      tooltipText: 'No fresh Usage API data',
+      maxUsedPercent: 0,
+      primary: null,
+      secondary: null,
+      planText: formatPlanType(profile && profile.planType),
+      observedAt: null,
+      sourceFile: null,
+      sourceType: null,
+      isEstimatedRateLimitData: false,
+      hasFreshUsageApiData: false
+    };
+  }
+
+  const hasFreshUsageApiData = isFreshUsageApiRateLimitState(rateLimitState, now);
   const primary = applyWeeklyZeroToPrimary(rawPrimary, secondary, now);
   const activeResetTimes = [primary, secondary]
     .filter((windowState) => Boolean(windowState && windowState.active && windowState.resetAt))
@@ -158,7 +236,12 @@ function getProfileRateStatus(profile, now = Date.now()) {
     maxUsedPercent,
     primary,
     secondary,
-    planText: formatPlanType(profile && profile.planType)
+    planText: formatPlanType(profile && profile.planType),
+    observedAt: normalizeTimestamp(rateLimitState.observedAt),
+    sourceFile: rateLimitState.sourceFile || null,
+    sourceType: getRateLimitSourceType(rateLimitState),
+    isEstimatedRateLimitData: !hasFreshUsageApiData,
+    hasFreshUsageApiData
   };
 }
 
@@ -209,13 +292,13 @@ function applyWeeklyZeroToPrimary(primary, secondary, now = Date.now()) {
   };
 }
 
-function isProfileWeeklyTokensLow(profile, now = Date.now()) {
-  const status = getProfileRateStatus(profile, now);
+function isProfileWeeklyTokensLow(profile, now = Date.now(), options = {}) {
+  const status = getProfileRateStatus(profile, now, options);
   return isWindowLowRemaining(status.secondary, now);
 }
 
-function getProfileDisplaySortKey(profile, now = Date.now()) {
-  const status = getProfileRateStatus(profile, now);
+function getProfileDisplaySortKey(profile, now = Date.now(), options = {}) {
+  const status = getProfileRateStatus(profile, now, options);
   const planType = normalizePlanType(profile && profile.planType);
   const weeklyTokensLow = isWindowLowRemaining(status.secondary, now);
 
@@ -236,8 +319,8 @@ function compareProfilesForDisplay(left, right, activeProfileId, now = Date.now(
     return leftActive ? -1 : 1;
   }
 
-  const leftKey = getProfileDisplaySortKey(left, now);
-  const rightKey = getProfileDisplaySortKey(right, now);
+  const leftKey = getProfileDisplaySortKey(left, now, { activeProfileId });
+  const rightKey = getProfileDisplaySortKey(right, now, { activeProfileId });
   const numericSorts = [
     rightKey.primaryRemainingPercent - leftKey.primaryRemainingPercent,
     rightKey.secondaryRemainingPercent - leftKey.secondaryRemainingPercent,
@@ -337,10 +420,13 @@ module.exports = {
   formatResetText,
   formatWindowCountdown,
   formatWindowMinutes,
+  getDisplayRateLimitState,
   getProfileDisplaySortKey,
   getProfileRateStatus,
   getWindowLabel,
   getWindowRemainingPercent,
+  isFreshUsageApiRateLimitState,
+  isUsageApiRateLimitState,
   isProfileWeeklyTokensLow,
   normalizeTimestamp,
   sortProfilesForDisplay

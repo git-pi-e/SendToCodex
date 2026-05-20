@@ -129,8 +129,8 @@ class RateLimitDetailsPanel {
     }
 
     const rows = sortProfilesForDisplay(profiles, activeProfileId, now).map((profile) => {
-      const status = getProfileRateStatus(profile, now);
-      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
+      const status = getProfileRateStatus(profile, now, { activeProfileId });
+      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, { activeProfileId });
       const activeClass = profile.id === activeProfileId ? 'profile-row active' : 'profile-row';
       const rowClass = `${activeClass}${weeklyTokensLow ? ' weekly-low' : ''}`;
       const visibleProfileName = displayProfileName(profile);
@@ -144,9 +144,10 @@ class RateLimitDetailsPanel {
           <td>${escapeHtml(status.planText)}</td>
           <td>${escapeHtml(status.compactText)}</td>
           <td>${status.cooldownUntil ? escapeHtml(formatAbsoluteTimestamp(status.cooldownUntil)) : 'n/a'}</td>
-          <td>${profile.rateLimitState && profile.rateLimitState.observedAt
-            ? escapeHtml(formatAbsoluteTimestamp(profile.rateLimitState.observedAt))
+          <td>${status.observedAt
+            ? escapeHtml(formatAbsoluteTimestamp(status.observedAt))
             : 'n/a'}</td>
+          <td>${escapeHtml(status.isEstimatedRateLimitData ? `${status.sourceType || 'unknown'} estimate` : (status.sourceType || 'n/a'))}</td>
         </tr>
       `;
     });
@@ -161,6 +162,7 @@ class RateLimitDetailsPanel {
             <th>Status</th>
             <th>Cooldown ends</th>
             <th>Last observation</th>
+            <th>Source</th>
           </tr>
         </thead>
         <tbody>${rows.join('')}</tbody>
@@ -175,7 +177,9 @@ class RateLimitDetailsPanel {
       ? profiles.find((profile) => profile.id === activeProfileId) || null
       : null;
     const now = Date.now();
-    const activeStatus = activeProfile ? getProfileRateStatus(activeProfile, now) : null;
+    const activeStatus = activeProfile
+      ? getProfileRateStatus(activeProfile, now, { activeProfileId })
+      : null;
     const lastObservation = this.rateLimitMonitor.getLastObservation();
     const lastError = this.rateLimitMonitor.getLastError();
     const lastRefreshResult = this.rateLimitMonitor.getLastRefreshResult
@@ -399,9 +403,9 @@ class RateLimitDetailsPanel {
                   : ''
               }
               ${
-                activeProfile && activeProfile.rateLimitState && activeProfile.rateLimitState.observedAt
+                activeStatus && activeStatus.observedAt
                   ? `<div class="window-line"><strong>Last observation:</strong> ${escapeHtml(
-                      formatAbsoluteTimestamp(activeProfile.rateLimitState.observedAt)
+                      formatAbsoluteTimestamp(activeStatus.observedAt)
                     )}</div>`
                   : ''
               }

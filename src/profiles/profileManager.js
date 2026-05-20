@@ -25,7 +25,6 @@ const CURRENT_PROFILES_VERSION = 2;
 const PROFILES_FILENAME = 'profiles.json';
 const AUTH_BACKUPS_DIRNAME = 'auth-backups';
 const ACTIVITY_LOG_FILENAME = 'profile-activity.jsonl';
-const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
 const ACTIVE_PROFILE_KEY = 'codexSwitch.activeProfileId';
 const ACTIVE_PROFILE_SET_AT_KEY = 'codexSwitch.activeProfileSetAt';
 const LAST_PROFILE_KEY = 'codexSwitch.lastProfileId';
@@ -210,23 +209,6 @@ function sanitizePathPart(value) {
 
 function getTimestampFilePart() {
   return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-function isUsageApiSource(sourceFile) {
-  return String(sourceFile || '').startsWith(USAGE_API_SOURCE_PREFIX);
-}
-
-function isUsageApiObservation(observation) {
-  return isUsageApiSource(observation && observation.filePath);
-}
-
-function shouldClearOptimisticUsageApiPrimary(rateLimitState) {
-  return Boolean(
-    rateLimitState &&
-      isUsageApiSource(rateLimitState.sourceFile) &&
-      rateLimitState.primary &&
-      clampPercent(rateLimitState.primary.usedPercent) <= 1
-  );
 }
 
 class ProfileManager {
@@ -1463,13 +1445,6 @@ class ProfileManager {
           }
         : null;
 
-      if (shouldClearOptimisticUsageApiPrimary(nextRateLimitState)) {
-        nextRateLimitState = {
-          ...nextRateLimitState,
-          primary: null
-        };
-      }
-
       const activeResetTimes = [nextRateLimitState && nextRateLimitState.primary, nextRateLimitState && nextRateLimitState.secondary]
         .filter((windowState) => Boolean(windowState && windowState.resetAt))
         .map((windowState) => windowState.resetAt);
@@ -1513,51 +1488,14 @@ class ProfileManager {
 
     const profile = file.profiles[index];
     const now = Date.now();
-    const storedPrimary =
-      profile.rateLimitState && profile.rateLimitState.primary
-        ? profile.rateLimitState.primary
-        : null;
-    const storedPrimaryResetAt = storedPrimary ? asTimestamp(storedPrimary.resetAt) : null;
-    const storedPrimaryActive = Boolean(storedPrimaryResetAt && storedPrimaryResetAt > now);
     const observedPrimary =
       observation && observation.primary
         ? observation.primary
         : null;
-    const usageApiObservation = isUsageApiObservation(observation);
-    const observedPrimaryUsed = observedPrimary
-      ? clampPercent(observedPrimary.usedPercent)
-      : null;
-    const storedPrimaryUsed = storedPrimary
-      ? clampPercent(storedPrimary.usedPercent)
-      : null;
-    const shouldPreserveStoredPrimary =
-      usageApiObservation &&
-      observedPrimary &&
-      (
-        (
-          storedPrimaryActive &&
-          storedPrimaryUsed != null &&
-          observedPrimaryUsed < storedPrimaryUsed
-        ) ||
-        (!storedPrimary && observedPrimaryUsed <= 1)
-      );
-    const primaryForStorage = shouldPreserveStoredPrimary
-      ? storedPrimary
-      : observedPrimary;
-
-    if (shouldPreserveStoredPrimary) {
-      this.log('info', 'Ignored optimistic Usage API primary 5H observation.', {
-        profileId,
-        observedPrimaryUsed,
-        storedPrimaryUsed,
-        storedPrimaryResetAt
-      });
-    }
-
     const primaryResetAt =
-      primaryForStorage &&
-      !primaryForStorage.outdated &&
-      asTimestamp(primaryForStorage.resetAt);
+      observedPrimary &&
+      !observedPrimary.outdated &&
+      asTimestamp(observedPrimary.resetAt);
     const secondaryResetAt =
       observation &&
       observation.secondary &&
@@ -1574,11 +1512,11 @@ class ProfileManager {
       totalTokens:
         observation && observation.totalUsage ? observation.totalUsage.total_tokens : null,
       lastTokens: observation && observation.lastUsage ? observation.lastUsage.total_tokens : null,
-      primary: primaryForStorage
+      primary: observedPrimary
         ? {
-            usedPercent: primaryForStorage.usedPercent,
+            usedPercent: observedPrimary.usedPercent,
             resetAt: primaryResetAt,
-            windowMinutes: primaryForStorage.windowMinutes
+            windowMinutes: observedPrimary.windowMinutes
           }
         : null,
       secondary: observation && observation.secondary

@@ -41,7 +41,7 @@ function createProfileTooltip(activeProfile, profiles) {
     const sortedProfiles = sortProfilesForDisplay(profiles, activeId, now);
 
     for (const profile of sortedProfiles) {
-      const status = getProfileRateStatus(profile, now);
+      const status = getProfileRateStatus(profile, now, { activeProfileId: activeId });
       const switchUri = buildCommandUri('codex-switch.profile.activate', [profile.id]);
       const plan = escapeMarkdown(formatPlanType(profile.planType));
       const linkedName = `[${escapeMarkdown(displayProfileName(profile))}](${switchUri})`;
@@ -49,7 +49,9 @@ function createProfileTooltip(activeProfile, profiles) {
         ? ` - ${escapeMarkdown(displayProfileEmail(profile.email))}`
         : '';
       const activePrefix = activeId === profile.id ? '**ACTIVE** ' : '';
-      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
+      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, {
+        activeProfileId: activeId
+      });
       const lowWeeklySuffix = weeklyTokensLow
         ? ' - <span style="color: var(--vscode-disabledForeground)">W &lt; 5%</span>'
         : '';
@@ -60,9 +62,10 @@ function createProfileTooltip(activeProfile, profiles) {
           percentageMode: 'remaining'
         })
       );
+      const estimateSuffix = status.isEstimatedRateLimitData ? ' - estimate' : '';
 
       tooltip.appendMarkdown(
-        `* ${activePrefix}${linkedName} - ${plan} - ${summary}${email}${lowWeeklySuffix}\n`
+        `* ${activePrefix}${linkedName} - ${plan} - ${summary}${estimateSuffix}${email}${lowWeeklySuffix}\n`
       );
     }
 

@@ -70,11 +70,11 @@ async function buildProfileQuickPickItems(profiles, activeProfileId, profileMana
   const now = Date.now();
   const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now);
   return Promise.all(sortedProfiles.map(async (profile) => {
-    const status = getProfileRateStatus(profile, now);
+    const status = getProfileRateStatus(profile, now, { activeProfileId });
     const descriptionParts = [];
     const authState = await getProfileAuthState(profileManager, profile.id);
     const isActive = profile.id === activeProfileId;
-    const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now);
+    const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, { activeProfileId });
 
     if (isActive) {
       descriptionParts.push('ACTIVE PROFILE');
@@ -90,16 +90,19 @@ async function buildProfileQuickPickItems(profiles, activeProfileId, profileMana
       descriptionParts.push(displayProfileEmail(profile.email));
     }
 
+    const summary = formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining'
+    });
+    const estimateSuffix = status.isEstimatedRateLimitData ? ' • estimate' : '';
+
     return {
       label: displayProfileName(profile),
       description: descriptionParts.length ? descriptionParts.join(' • ') : undefined,
       detail: authState.hasIssue
         ? `${isActive ? 'Currently selected • ' : ''}Restore the matching auth.json for this account`
-        : `${isActive ? 'Currently selected • ' : ''}${formatCompactRateSummary(status, now, {
-            includePrimaryCountdown: true,
-            includeSecondaryCountdown: true,
-            percentageMode: 'remaining'
-          })}`,
+        : `${isActive ? 'Currently selected • ' : ''}${summary}${estimateSuffix}`,
       profileId: profile.id,
       profileName: profile.name,
       isActive,
@@ -592,9 +595,27 @@ function registerProfileCommands(
     return false;
   };
 
-  const maybeReloadWindowAfterProfileSwitch = async () => {
+  const maybeReloadWindowAfterProfileSwitch = () => {
     if (getReloadWindowAfterProfileSwitch()) {
-      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      profileManager.logger &&
+        profileManager.logger.info &&
+        profileManager.logger.info('Requesting VS Code window reload after Codex profile switch.');
+      setTimeout(() => {
+        void vscode.commands.executeCommand('workbench.action.reloadWindow').then(
+          undefined,
+          (error) => {
+            const message = error && error.message ? error.message : String(error);
+            profileManager.logger &&
+              profileManager.logger.error &&
+              profileManager.logger.error('Failed to request VS Code window reload after profile switch.', {
+                error: message
+              });
+            void vscode.window.showErrorMessage(
+              `Failed to reload VS Code after Codex profile switch: ${message}`
+            );
+          }
+        );
+      }, 0);
     }
   };
 
@@ -604,7 +625,7 @@ function registerProfileCommands(
     await rateLimitMonitor.refresh(true);
     await refreshProfileUi();
     if (reloadWindow) {
-      await maybeReloadWindowAfterProfileSwitch();
+      maybeReloadWindowAfterProfileSwitch();
     }
   };
 
@@ -613,6 +634,9 @@ function registerProfileCommands(
     const previousProfileId = await profileManager.getActiveProfileId();
     const changedProfile = previousProfileId !== profileId;
     const shouldReloadWindow = reloadWindowOnSwitch && (changedProfile || forceReloadWindow);
+    if (profileId && (changedProfile || forceReloadWindow)) {
+      markWindowAuthChangeExpected({ profileId });
+    }
     const switched = await profileManager.setActiveProfileId(profileId);
     if (!switched) {
       return false;
@@ -1523,8 +1547,8 @@ function registerProfileCommands(
       const usageMode = vscode.workspace
         .getConfiguration('codexRatelimit')
         .get('preferUsageApi', true)
-        ? 'Usage API first, then local sessions'
-        : 'Local sessions only';
+        ? 'Usage API for active profile; local estimates for inactive profiles'
+        : 'local estimates only; active exact limits unavailable';
       const doctorIssues = [];
       if (currentMatch.hasAuth && !currentMatch.profileId) {
         doctorIssues.push('- Current Codex auth.json belongs to an unmanaged account. Use "Add current profile".');

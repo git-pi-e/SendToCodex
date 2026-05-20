@@ -78,8 +78,11 @@ class ProfileStatusBarController {
       return;
     }
 
-    const status = getProfileRateStatus(activeProfile);
-    this.statusBarItem.text = `$(account) ${formatStatusBarProfileName(activeProfile)}: ${formatCompactRateSummary(status, Date.now(), {
+    const now = Date.now();
+    const status = getProfileRateStatus(activeProfile, now, {
+      activeProfileId: activeProfile.id
+    });
+    this.statusBarItem.text = `$(account) ${formatStatusBarProfileName(activeProfile)}: ${formatCompactRateSummary(status, now, {
       includePrimaryCountdown: true,
       includeSecondaryCountdown: false,
       percentageMode: 'remaining'
@@ -89,7 +92,7 @@ class ProfileStatusBarController {
     this.statusBarItem.color = getStatusBarColor(
       status.maxUsedPercent,
       status.cooldownActive,
-      isProfileWeeklyTokensLow(activeProfile)
+      isProfileWeeklyTokensLow(activeProfile, now, { activeProfileId: activeProfile.id })
     );
     this.statusBarItem.tooltip = createProfileTooltip(activeProfile, allProfiles);
     this.statusBarItem.show();

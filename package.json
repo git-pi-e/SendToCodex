@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.13",
+  "version": "0.0.25",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -30,6 +30,7 @@
     "src/**"
   ],
   "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
     "package:vsix": "npx --cache .npm-cache @vscode/vsce package --allow-missing-repository --no-dependencies"
   },
   "activationEvents": [
@@ -438,7 +439,7 @@
           "codexRatelimit.preferUsageApi": {
             "type": "boolean",
             "default": true,
-            "description": "Query the Codex usage API for the active profile before falling back to local session files.",
+            "description": "Use the Codex Usage API for exact active-profile limits. Inactive profiles can still show stored local-session estimates.",
             "scope": "window"
           },
           "codexRatelimit.color.enable": {
@@ -478,7 +479,7 @@
           "codexRatelimit.sessionPath": {
             "type": "string",
             "default": "",
-            "description": "Custom path to Codex sessions (leave empty to use ~/.codex/sessions).",
+            "description": "Custom path to Codex sessions (leave empty to use ~/.codex/sessions). Local sessions are used only as stored estimates, not as exact active-profile limits.",
             "scope": "window"
           },
           "codexRatelimit.refreshInterval": {

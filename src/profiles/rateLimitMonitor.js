@@ -202,19 +202,19 @@ class RateLimitMonitor {
     return normalizedMinutes * 60 * 1000;
   }
 
-  getKnownRemainingPercents(profile, now) {
-    const status = getProfileRateStatus(profile, now);
+  getKnownRemainingPercents(profile, now, activeProfileId) {
+    const status = getProfileRateStatus(profile, now, { activeProfileId });
     return [status.primary, status.secondary]
       .map((windowState) => getWindowRemainingPercent(windowState, now))
       .filter((value) => value >= 0);
   }
 
-  isProfileLowOnUsage(profile, now, threshold) {
-    const remainingPercents = this.getKnownRemainingPercents(profile, now);
+  isProfileLowOnUsage(profile, now, threshold, activeProfileId) {
+    const remainingPercents = this.getKnownRemainingPercents(profile, now, activeProfileId);
     return remainingPercents.some((value) => value <= threshold);
   }
 
-  isUsableSwitchCandidate(profile, now, threshold, freshnessMs) {
+  isUsableSwitchCandidate(profile, now, threshold, freshnessMs, activeProfileId) {
     if (!profile || !profile.rateLimitState || !profile.rateLimitState.observedAt) {
       return false;
     }
@@ -223,11 +223,11 @@ class RateLimitMonitor {
       return false;
     }
 
-    if (isProfileWeeklyTokensLow(profile, now)) {
+    if (isProfileWeeklyTokensLow(profile, now, { activeProfileId })) {
       return false;
     }
 
-    const remainingPercents = this.getKnownRemainingPercents(profile, now);
+    const remainingPercents = this.getKnownRemainingPercents(profile, now, activeProfileId);
     return remainingPercents.length > 0 && remainingPercents.every((value) => value > threshold);
   }
 
@@ -243,14 +243,23 @@ class RateLimitMonitor {
       const freshnessMs = this.getLowUsageSwitchFreshnessMs();
       const profiles = await this.profileManager.listProfiles();
       const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
-      if (!activeProfile || !this.isProfileLowOnUsage(activeProfile, now, threshold)) {
+      if (
+        !activeProfile ||
+        !this.isProfileLowOnUsage(activeProfile, now, threshold, activeProfileId)
+      ) {
         return;
       }
 
       const candidates = sortProfilesForDisplay(
         profiles.filter((profile) => {
           return profile.id !== activeProfileId &&
-            this.isUsableSwitchCandidate(profile, now, threshold, freshnessMs);
+            this.isUsableSwitchCandidate(
+              profile,
+              now,
+              threshold,
+              freshnessMs,
+              activeProfileId
+            );
         }),
         undefined,
         now
@@ -368,7 +377,9 @@ class RateLimitMonitor {
           return;
         }
 
-        if (authData) {
+        if (!authData) {
+          usageApiError = 'No stored Codex auth tokens for the active profile';
+        } else {
           const usageApiResult = await getUsageApiRateLimitData(authData, this.logger);
           if (refreshId !== this.latestRefreshId) {
             return;
@@ -393,13 +404,24 @@ class RateLimitMonitor {
               sourceFile: usageApiResult.data.filePath || 'usage-api',
               force: Boolean(force)
             });
+            this.onDidChangeEmitter.fire();
+            void this.maybeSuggestLowUsageSwitch(activeProfileId);
+            return;
           }
 
           usageApiError =
-            recordedUsageApi
-              ? null
-              : usageApiResult.error || 'Waiting for usage API data for the active profile';
+            usageApiResult && usageApiResult.found && usageApiResult.data
+              ? 'Usage API data did not match the active profile plan'
+              : (usageApiResult && usageApiResult.error) ||
+                'Codex Usage API did not return rate-limit data';
         }
+      } else {
+        usageApiError =
+          'Codex Usage API is disabled; exact active-profile limit display is unavailable';
+      }
+
+      if (recordedUsageApi) {
+        return;
       }
 
       const activeSinceMs = await this.profileManager.getActiveProfileActivatedAt();
@@ -418,13 +440,6 @@ class RateLimitMonitor {
       }
 
       if (!result.found || !result.data) {
-        if (recordedUsageApi) {
-          this.lastError = null;
-          this.onDidChangeEmitter.fire();
-          void this.maybeSuggestLowUsageSwitch(activeProfileId);
-          return;
-        }
-
         this.lastError = usageApiError || result.error || 'No rate limit data found';
         this.lastObservation = null;
         this.setRefreshResult({
@@ -444,14 +459,7 @@ class RateLimitMonitor {
         result.data.recordTimestampMs &&
         result.data.recordTimestampMs + 2000 < activeSinceMs
       ) {
-        if (recordedUsageApi) {
-          this.lastError = null;
-          this.onDidChangeEmitter.fire();
-          void this.maybeSuggestLowUsageSwitch(activeProfileId);
-          return;
-        }
-
-        this.lastError = 'Waiting for session data for the active profile';
+        this.lastError = usageApiError || 'Waiting for session data for the active profile';
         this.lastObservation = result.data;
         this.setRefreshResult({
           source: 'localSessions',
@@ -459,6 +467,7 @@ class RateLimitMonitor {
           profileId: activeProfileId,
           sourceFile: result.data.filePath,
           error: this.lastError,
+          usageApiError,
           force: Boolean(force)
         });
         this.onDidChangeEmitter.fire();
@@ -466,14 +475,7 @@ class RateLimitMonitor {
       }
 
       if (!this.shouldAcceptObservationForProfile(activeProfile, result.data)) {
-        if (recordedUsageApi) {
-          this.lastError = null;
-          this.onDidChangeEmitter.fire();
-          void this.maybeSuggestLowUsageSwitch(activeProfileId);
-          return;
-        }
-
-        this.lastError = 'Waiting for rate-limit data for the active profile';
+        this.lastError = usageApiError || 'Waiting for rate-limit data for the active profile';
         this.lastObservation = null;
         this.setRefreshResult({
           source: 'localSessions',
@@ -481,30 +483,26 @@ class RateLimitMonitor {
           profileId: activeProfileId,
           sourceFile: result.data.filePath,
           error: this.lastError,
+          usageApiError,
           force: Boolean(force)
         });
         this.onDidChangeEmitter.fire();
         return;
       }
 
-      if (refreshId !== this.latestRefreshId) {
-        return;
-      }
-
-      this.lastError = null;
+      this.lastError = usageApiError;
       this.lastObservation = result.data;
       this.sessionFileByProfileId.set(activeProfileId, result.data.filePath);
       await this.profileManager.recordRateLimitObservation(activeProfileId, result.data);
       this.setRefreshResult({
         source: 'localSessions',
-        outcome: 'fresh',
+        outcome: 'estimate',
         profileId: activeProfileId,
         sourceFile: result.data.filePath,
         usageApiError,
         force: Boolean(force)
       });
       this.onDidChangeEmitter.fire();
-      void this.maybeSuggestLowUsageSwitch(activeProfileId);
     } catch (error) {
       this.lastError = error && error.message ? error.message : String(error);
       this.setRefreshResult({
