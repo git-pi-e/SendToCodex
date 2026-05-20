@@ -14,6 +14,7 @@ function normalizeNumber(value, fallback) {
 }
 
 const LOW_REMAINING_PERCENT_THRESHOLD = 5;
+const FULL_REMAINING_PERCENT_THRESHOLD = 99;
 const DEFAULT_PRIMARY_WINDOW_MINUTES = 5 * 60;
 const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
 const RATE_LIMIT_DISPLAY_FRESHNESS_MS = 60 * 60 * 1000;
@@ -257,13 +258,26 @@ function getRawWindowRemainingPercent(windowState, now = Date.now()) {
   return Math.max(0, Math.min(100, 100 - windowState.usedPercent));
 }
 
-function getWindowRemainingPercent(windowState, now = Date.now()) {
-  const remainingPercent = getRawWindowRemainingPercent(windowState, now);
+function roundRemainingPercent(remainingPercent) {
   if (remainingPercent == null) {
     return -1;
   }
 
-  return remainingPercent < LOW_REMAINING_PERCENT_THRESHOLD ? 0 : Math.round(remainingPercent);
+  const normalized = Math.max(0, Math.min(100, normalizeNumber(remainingPercent, 0)));
+  if (normalized < LOW_REMAINING_PERCENT_THRESHOLD) {
+    return 0;
+  }
+
+  if (normalized >= FULL_REMAINING_PERCENT_THRESHOLD) {
+    return 100;
+  }
+
+  return Math.round(normalized);
+}
+
+function getWindowRemainingPercent(windowState, now = Date.now()) {
+  const remainingPercent = getRawWindowRemainingPercent(windowState, now);
+  return roundRemainingPercent(remainingPercent);
 }
 
 function isWindowLowRemaining(windowState, now = Date.now()) {
@@ -383,9 +397,7 @@ function formatCompactWindow(windowState, label, now = Date.now(), options = {})
   const isReady = !windowState.resetAt || windowState.resetAt <= now;
   const percentValue =
     percentageMode === 'remaining'
-      ? isReady
-        ? 100
-        : Math.max(0, 100 - Math.round(windowState.usedPercent))
+      ? getWindowRemainingPercent(windowState, now)
       : isReady
         ? 0
         : Math.round(windowState.usedPercent);
