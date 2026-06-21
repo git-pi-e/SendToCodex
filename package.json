@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -112,7 +112,7 @@
       },
       {
         "command": "codex-switch.profile.login",
-        "title": "Codex Multitool: Login via Codex CLI"
+        "title": "Codex Multitool: Add Account via Isolated Login"
       },
       {
         "command": "codex-switch.profile.reauthenticate",
