@@ -11,11 +11,11 @@ const {
 
 const USAGE_API_SOURCE = 'https://chatgpt.com/backend-api/wham/usage';
 
-function createProfile(rateLimitState) {
+function createProfile(rateLimitState, overrides = {}) {
   return {
     id: 'profile-1',
     name: 'Profile 1',
-    planType: 'plus',
+    planType: overrides.planType || 'plus',
     rateLimitState
   };
 }
@@ -88,6 +88,130 @@ test('nearly full remaining limits display as 100 percent', () => {
       percentageMode: 'remaining'
     }),
     '5H 100% | W 100%'
+  );
+});
+
+test('free profile display uses primary limit window longer than five hours', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile(
+      {
+        observedAt: now - 10_000,
+        sourceFile: USAGE_API_SOURCE,
+        primary: {
+          usedPercent: 35,
+          resetAt: now + 24 * 60 * 60 * 1000,
+          windowMinutes: 24 * 60
+        },
+        secondary: {
+          usedPercent: 15,
+          resetAt: now + 7 * 24 * 60 * 60 * 1000,
+          windowMinutes: 10_080
+        }
+      },
+      { planType: 'free' }
+    ),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: false,
+      includeSecondaryCountdown: false,
+      percentageMode: 'remaining'
+    }),
+    '1D 65% | W 85%'
+  );
+});
+
+test('free profile display can derive primary limit window from reset time', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile(
+      {
+        observedAt: now - 10_000,
+        sourceFile: USAGE_API_SOURCE,
+        primary: {
+          usedPercent: 45,
+          resetAt: now + 9 * 60 * 60 * 1000,
+          windowMinutes: 0
+        },
+        secondary: null
+      },
+      { planType: 'free' }
+    ),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: false,
+      includeSecondaryCountdown: false,
+      percentageMode: 'remaining'
+    }),
+    '9H 55%'
+  );
+});
+
+test('free profile display prefers long reset time over generic five hour window', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile(
+      {
+        observedAt: now - 10_000,
+        sourceFile: USAGE_API_SOURCE,
+        primary: {
+          usedPercent: 3,
+          resetAt: now + 7 * 24 * 60 * 60 * 1000,
+          windowMinutes: 300
+        },
+        secondary: null
+      },
+      { planType: 'free' }
+    ),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: false,
+      percentageMode: 'remaining'
+    }),
+    '7D 97% 7d'
+  );
+});
+
+test('free profile display rounds one-minute-short weekly reset label to seven days', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile(
+      {
+        observedAt: now - 10_000,
+        sourceFile: USAGE_API_SOURCE,
+        primary: {
+          usedPercent: 3,
+          resetAt: now + (7 * 24 * 60 - 1) * 60 * 1000,
+          windowMinutes: 300
+        },
+        secondary: null
+      },
+      { planType: 'free' }
+    ),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: false,
+      percentageMode: 'remaining'
+    }),
+    '7D 97% 6d 23h'
   );
 });
 

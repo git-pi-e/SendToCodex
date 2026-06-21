@@ -25,6 +25,7 @@ class RateLimitMonitor {
     this.lastLowUsagePromptKey = null;
     this.sessionFileByProfileId = new Map();
     this.latestRefreshId = 0;
+    this.refreshInFlight = null;
     this.onDidChangeEmitter = new vscode.EventEmitter();
     this.onDidChange = this.onDidChangeEmitter.event;
     this.disposables = [];
@@ -111,18 +112,40 @@ class RateLimitMonitor {
     return normalized && normalized !== 'unknown' ? normalized : null;
   }
 
-  shouldAcceptObservationForProfile(profile, observation) {
+  shouldAcceptObservationForProfile(profile, observation, options = {}) {
     if (!profile || !observation) {
       return false;
     }
 
     const profilePlanType = this.normalizePlanType(profile.planType);
     const observedPlanType = this.normalizePlanType(observation.planType);
-    if (profilePlanType && observedPlanType && profilePlanType !== observedPlanType) {
+    if (
+      !options.acceptPlanChange &&
+      profilePlanType &&
+      observedPlanType &&
+      profilePlanType !== observedPlanType
+    ) {
       return false;
     }
 
     return true;
+  }
+
+  logObservedPlanChange(profile, observation, source) {
+    const profilePlanType = this.normalizePlanType(profile && profile.planType);
+    const observedPlanType = this.normalizePlanType(observation && observation.planType);
+    if (!profilePlanType || !observedPlanType || profilePlanType === observedPlanType) {
+      return;
+    }
+
+    if (this.logger) {
+      this.logger.info('Updating Codex profile plan type from rate-limit observation.', {
+        profileId: profile.id,
+        previousPlanType: profile.planType,
+        observedPlanType: observation.planType,
+        source
+      });
+    }
   }
 
   setWindowFocused(focused) {
@@ -302,6 +325,24 @@ class RateLimitMonitor {
   }
 
   async refresh(force) {
+    if (this.refreshInFlight) {
+      if (this.logger) {
+        this.logger.debug('Coalesced Codex rate-limit refresh while another refresh is running.', {
+          force: Boolean(force)
+        });
+      }
+      return this.refreshInFlight;
+    }
+
+    this.refreshInFlight = this.runRefresh(force);
+    try {
+      return await this.refreshInFlight;
+    } finally {
+      this.refreshInFlight = null;
+    }
+  }
+
+  async runRefresh(force) {
     const refreshId = ++this.latestRefreshId;
 
     try {
@@ -388,8 +429,11 @@ class RateLimitMonitor {
           if (
             usageApiResult.found &&
             usageApiResult.data &&
-            this.shouldAcceptObservationForProfile(activeProfile, usageApiResult.data)
+            this.shouldAcceptObservationForProfile(activeProfile, usageApiResult.data, {
+              acceptPlanChange: true
+            })
           ) {
+            this.logObservedPlanChange(activeProfile, usageApiResult.data, 'usageApi');
             this.lastError = null;
             this.lastObservation = usageApiResult.data;
             await this.profileManager.recordRateLimitObservation(

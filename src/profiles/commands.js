@@ -16,6 +16,12 @@ const {
   loadAuthDataFromFile,
   shouldUseWslAuthPath
 } = require('./authManager');
+const {
+  DEFAULT_POST_SWITCH_RESTORE_STRATEGY,
+  POST_SWITCH_RESTORE_STRATEGY_OPTIONS,
+  getPostSwitchRestoreStrategyOption,
+  normalizePostSwitchRestoreStrategy
+} = require('../codex/CodexPostSwitchWarmup');
 const { areProfileFeaturesEnabled } = require('./featureFlags');
 const {
   formatCompactRateSummary,
@@ -369,6 +375,32 @@ function buildSendToCodexToggleItem(enabled) {
   };
 }
 
+function buildPostSwitchRestoreStrategyItem(strategy) {
+  const option = getPostSwitchRestoreStrategyOption(strategy);
+  return {
+    label: `$(beaker) Post-switch chat restore: ${option.label}`,
+    description: option.description,
+    detail: option.detail,
+    restoreStrategyPicker: true
+  };
+}
+
+async function showPostSwitchRestoreStrategyQuickPick(currentStrategy) {
+  const normalizedCurrent = normalizePostSwitchRestoreStrategy(currentStrategy);
+  return vscode.window.showQuickPick(
+    POST_SWITCH_RESTORE_STRATEGY_OPTIONS.map((option) => ({
+      label: `${option.id === normalizedCurrent ? '$(check) ' : ''}${option.label}`,
+      description: option.description,
+      detail: option.detail,
+      strategy: option.id
+    })),
+    {
+      title: 'Codex Multitool',
+      placeHolder: 'Choose post-switch chat restore strategy'
+    }
+  );
+}
+
 function buildSendToCodexSettingsItem() {
   return {
     label: '$(gear) Send to Codex settings...',
@@ -389,6 +421,7 @@ function buildSwitchQuickPickItems(
   profileItems,
   addCurrentProfileItem,
   reloadEnabled,
+  restoreStrategy,
   sendToCodexEnabled
 ) {
   const items = [];
@@ -427,6 +460,7 @@ function buildSwitchQuickPickItems(
       kind: vscode.QuickPickItemKind.Separator
     },
     buildReloadWindowToggleItem(reloadEnabled),
+    buildPostSwitchRestoreStrategyItem(restoreStrategy),
     buildSendToCodexToggleItem(sendToCodexEnabled),
     buildSendToCodexSettingsItem(),
     buildManageProfilesItem()
@@ -440,6 +474,7 @@ function showProfileSwitchQuickPick(
   addCurrentProfileItem,
   getReloadEnabled,
   setReloadEnabled,
+  getRestoreStrategy,
   getSendToCodexEnabled,
   setSendToCodexEnabled
 ) {
@@ -461,6 +496,7 @@ function showProfileSwitchQuickPick(
         profileItems,
         addCurrentProfileItem,
         getReloadEnabled(),
+        getRestoreStrategy(),
         getSendToCodexEnabled()
       );
       quickPick.items = items;
@@ -491,6 +527,11 @@ function showProfileSwitchQuickPick(
         } finally {
           quickPick.busy = false;
         }
+        return;
+      }
+
+      if (selection.restoreStrategyPicker) {
+        finish({ command: 'codex-switch.profile.restoreStrategy' });
         return;
       }
 
@@ -542,6 +583,12 @@ function registerProfileCommands(
       .get('reloadWindowAfterProfileSwitch', true)
   );
 
+  const getPostSwitchRestoreStrategy = () => normalizePostSwitchRestoreStrategy(
+    vscode.workspace
+      .getConfiguration('codexSwitch')
+      .get('postSwitchRestoreStrategy', DEFAULT_POST_SWITCH_RESTORE_STRATEGY)
+  );
+
   const getSendToCodexEnabled = () => Boolean(
     vscode.workspace
       .getConfiguration(CONFIG_SECTION)
@@ -556,6 +603,22 @@ function registerProfileCommands(
         Boolean(enabled),
         vscode.ConfigurationTarget.Global
       );
+  };
+
+  const setPostSwitchRestoreStrategy = async (strategy) => {
+    const normalized = normalizePostSwitchRestoreStrategy(strategy);
+    await vscode.workspace
+      .getConfiguration('codexSwitch')
+      .update(
+        'postSwitchRestoreStrategy',
+        normalized,
+        vscode.ConfigurationTarget.Global
+      );
+    profileManager.logger &&
+      profileManager.logger.info &&
+      profileManager.logger.info('Changed Codex post-switch chat restore strategy.', {
+        strategy: normalized
+      });
   };
 
   const setSendToCodexEnabled = async (enabled) => {
@@ -1094,6 +1157,7 @@ function registerProfileCommands(
         addCurrentProfileItem,
         getReloadWindowAfterProfileSwitch,
         setReloadWindowAfterProfileSwitch,
+        getPostSwitchRestoreStrategy,
         getSendToCodexEnabled,
         setSendToCodexEnabled
       );
@@ -1672,6 +1736,11 @@ function registerProfileCommands(
             label: 'Refresh rate limits',
             command: 'codex-ratelimit.refreshStats'
           },
+          {
+            label: 'Post-switch chat restore strategy...',
+            detail: getPostSwitchRestoreStrategyOption(getPostSwitchRestoreStrategy()).detail,
+            command: 'codex-switch.profile.restoreStrategy'
+          },
           disableSendToCodexItem,
           ...(addCurrentProfileItem
             ? [
@@ -1729,6 +1798,28 @@ function registerProfileCommands(
     }
   );
 
+  const restoreStrategyCommand = vscode.commands.registerCommand(
+    'codex-switch.profile.restoreStrategy',
+    async () => {
+      if (!(await ensureProfileFeaturesEnabled())) {
+        return;
+      }
+
+      const selection = await showPostSwitchRestoreStrategyQuickPick(
+        getPostSwitchRestoreStrategy()
+      );
+      if (!selection || !selection.strategy) {
+        return;
+      }
+
+      await setPostSwitchRestoreStrategy(selection.strategy);
+      const option = getPostSwitchRestoreStrategyOption(selection.strategy);
+      void vscode.window.showInformationMessage(
+        `Codex post-switch chat restore strategy: ${option.label}.`
+      );
+    }
+  );
+
   const refreshStatsCommand = vscode.commands.registerCommand(
     'codex-ratelimit.refreshStats',
     async () => {
@@ -1778,6 +1869,7 @@ function registerProfileCommands(
     restoreAuthBackupCommand,
     profileDoctorCommand,
     manageProfilesCommand,
+    restoreStrategyCommand,
     refreshStatsCommand,
     showDetailsCommand,
     openSettingsCommand

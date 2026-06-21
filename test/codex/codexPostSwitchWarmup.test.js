@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { createMockVscode, installMockVscode } = require('../helpers/mockVscode');
 
 const MODULE_PATH = '../../src/codex/CodexPostSwitchWarmup';
@@ -92,7 +95,115 @@ test('captures the active Codex conversation editor tab before account switch', 
   }
 });
 
-test('restores a Codex conversation editor and does not create a new chat', async () => {
+test('captures a sidebar conversation ID from the official Codex log', () => {
+  const mock = createMockVscode();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sidebar-capture-'));
+  const logPath = path.join(directory, 'Codex.log');
+  const conversationId = '019ed0b4-722c-7180-9d34-8cf7e7c5c455';
+  fs.writeFileSync(
+    logPath,
+    `2026-06-20 21:54:45.739 [info] maybe_resume_success conversationId=${conversationId} turnCount=243\n`
+  );
+
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const context = mod.captureCurrentCodexChatContext(createLogger(), {
+      fallbackToSidebar: true,
+      codexLogPath: logPath
+    });
+
+    assert.deepEqual(context, {
+      kind: 'sidebarConversation',
+      source: 'official-codex-log',
+      conversationId,
+      route: `/local/${conversationId}`
+    });
+  } finally {
+    restore();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('restores a captured sidebar conversation through the Codex URI handler', async () => {
+  const mock = createMockVscode({
+    commands: ['chatgpt.openSidebar']
+  });
+  mock.setExtension('openai.chatgpt', {
+    isActive: true,
+    activate: async () => {}
+  });
+  const conversationId = '019ed0b4-722c-7180-9d34-8cf7e7c5c455';
+  let verified = null;
+
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const restored = await mod.warmUpCodexAfterProfileSwitch(
+      'sidebar-route-test',
+      createLogger(),
+      {
+        restoreChatContext: {
+          kind: 'sidebarConversation',
+          source: 'official-codex-log',
+          conversationId,
+          route: `/local/${conversationId}`
+        },
+        codexLogPath: 'C:\\logs\\openai.chatgpt\\Codex.log',
+        waitForConversationResume: async (logPath, restoredId, options) => {
+          verified = { logPath, restoredId, options };
+          return { resumed: true, waitedMs: 5 };
+        },
+        sidebarResumeStartOffset: 123,
+        sidebarPreRouteDelayMs: 0,
+        sidebarPostRouteFocusDelayMs: 0,
+        showErrorMessage: false,
+        commandReadyTimeoutMs: 50,
+        commandTimeoutMs: 50,
+        pollIntervalMs: 1
+      }
+    );
+
+    assert.equal(restored, true);
+    assert.deepEqual(mock.externalUris, [
+      `vscode://openai.chatgpt/local/${conversationId}`
+    ]);
+    assert.equal(verified.restoredId, conversationId);
+    assert.equal(verified.options.startOffset, 123);
+    assert.deepEqual(
+      mock.commandCalls.map((call) => call.command),
+      ['chatgpt.openSidebar', 'chatgpt.openSidebar']
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('reports an explicit failure when no sidebar conversation can be captured', async () => {
+  const mock = createMockVscode();
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const context = mod.captureCurrentCodexChatContext(createLogger(), {
+      fallbackToSidebar: true,
+      codexLogPath: 'C:\\missing\\Codex.log'
+    });
+    assert.equal(context.kind, 'sidebarUnavailable');
+
+    const restored = await mod.warmUpCodexAfterProfileSwitch(
+      'missing-sidebar-route',
+      createLogger(),
+      {
+        restoreChatContext: context,
+        showErrorMessage: true
+      }
+    );
+    assert.equal(restored, false);
+    assert.equal(mock.errorMessages.length, 1);
+    assert.match(mock.errorMessages[0], /Codex chat did not reopen/);
+  } finally {
+    restore();
+  }
+});
+
+test('openWith strategy restores a Codex conversation editor without closing native tabs', async () => {
   const mock = createMockVscode({
     commands: ['chatgpt.openSidebar', 'chatgpt.newChat', 'vscode.openWith']
   });
@@ -121,9 +232,114 @@ test('restores a Codex conversation editor and does not create a new chat', asyn
           viewColumn: 1,
           source: 'unit-test'
         },
+        restoreStrategy: 'openWithImmediate',
         showErrorMessage: false,
         commandReadyTimeoutMs: 50,
         commandTimeoutMs: 50,
+        tabVerifyTimeoutMs: 50,
+        pollIntervalMs: 1
+      }
+    );
+
+    assert.equal(restored, true);
+    assert.equal(mock.closedTabs.length, 0);
+    assert.deepEqual(
+      mock.commandCalls.map((call) => call.command),
+      ['vscode.openWith']
+    );
+    assert.equal(mock.commandCalls.some((call) => call.command === 'chatgpt.newChat'), false);
+    assert.equal(mock.commandCalls.some((call) => call.command === 'chatgpt.openSidebar'), false);
+    assert.equal(mock.commandCalls[0].args[1], 'chatgpt.conversationEditor');
+    assert.equal(mock.commandCalls[0].args[2].preview, false);
+  } finally {
+    restore();
+  }
+});
+
+test('default strategy restores the previous editor without opening the sidebar', async () => {
+  const mock = createMockVscode({
+    commands: ['chatgpt.openSidebar', 'vscode.openWith']
+  });
+  mock.setExtension('openai.chatgpt', {
+    isActive: true,
+    activate: async () => {}
+  });
+  const uri = 'openai-codex://route/local/thread-native';
+  const nativeTab = createCodexTab(mock, uri, { isActive: true });
+  const group = {
+    viewColumn: 1,
+    activeTab: nativeTab,
+    tabs: [nativeTab]
+  };
+  mock.setTabGroups([group], group);
+
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const restored = await mod.warmUpCodexAfterProfileSwitch(
+      'unit-test-default',
+      createLogger(),
+      {
+        restoreChatContext: {
+          kind: 'conversationEditor',
+          uri,
+          viewColumn: 1,
+          source: 'unit-test'
+        },
+        showErrorMessage: false,
+        commandReadyTimeoutMs: 50,
+        commandTimeoutMs: 50,
+        sidebarSettleTimeoutMs: 5,
+        sidebarSettleMs: 1,
+        nativeCheckTimeoutMs: 1,
+        pollIntervalMs: 1
+      }
+    );
+
+    assert.equal(restored, true);
+    assert.equal(mock.closedTabs.length, 0);
+    assert.deepEqual(
+      mock.commandCalls.map((call) => call.command),
+      ['vscode.openWith']
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('legacy close strategy keeps the old close-before-open behavior available', async () => {
+  const mock = createMockVscode({
+    commands: ['chatgpt.openSidebar', 'chatgpt.newChat', 'vscode.openWith']
+  });
+  mock.setExtension('openai.chatgpt', {
+    isActive: true,
+    activate: async () => {}
+  });
+  const uri = 'openai-codex://route/local/thread-legacy';
+  const staleTab = createCodexTab(mock, uri, { isActive: true });
+  const group = {
+    viewColumn: 1,
+    activeTab: staleTab,
+    tabs: [staleTab]
+  };
+  mock.setTabGroups([group], group);
+
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const restored = await mod.warmUpCodexAfterProfileSwitch(
+      'unit-test-legacy',
+      createLogger(),
+      {
+        restoreChatContext: {
+          kind: 'conversationEditor',
+          uri,
+          viewColumn: 1,
+          source: 'unit-test'
+        },
+        restoreStrategy: 'legacyCloseThenOpenWith',
+        showErrorMessage: false,
+        commandReadyTimeoutMs: 50,
+        commandTimeoutMs: 50,
+        tabVerifyTimeoutMs: 50,
         pollIntervalMs: 1
       }
     );
@@ -136,10 +352,6 @@ test('restores a Codex conversation editor and does not create a new chat', asyn
       mock.commandCalls.map((call) => call.command),
       ['vscode.openWith']
     );
-    assert.equal(mock.commandCalls.some((call) => call.command === 'chatgpt.newChat'), false);
-    assert.equal(mock.commandCalls.some((call) => call.command === 'chatgpt.openSidebar'), false);
-    assert.equal(mock.commandCalls[0].args[1], 'chatgpt.conversationEditor');
-    assert.equal(mock.commandCalls[0].args[2].preview, false);
   } finally {
     restore();
   }

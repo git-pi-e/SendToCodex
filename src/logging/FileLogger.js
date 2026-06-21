@@ -27,6 +27,10 @@ class FileLogger {
     this.write('error', message, data);
   }
 
+  debug(message, data) {
+    this.write('debug', message, data, { forceOutput: true });
+  }
+
   reloadConfiguration() {
     const configuration = loadConfiguration();
     const switchConfiguration = vscode.workspace.getConfiguration('codexSwitch');
@@ -52,8 +56,9 @@ class FileLogger {
     return fs.existsSync(this.logFilePath);
   }
 
-  write(level, message, data) {
-    if (!this.loggingEnabled) {
+  write(level, message, data, options = {}) {
+    const forceOutput = Boolean(options.forceOutput);
+    if (!this.loggingEnabled && !forceOutput) {
       return this.writeChain;
     }
 
@@ -69,7 +74,7 @@ class FileLogger {
       this.output.appendLine(`[${level}] ${message}${data ? ` ${JSON.stringify(data)}` : ''}`);
     }
 
-    if (!this.logFileEnabled) {
+    if (!this.loggingEnabled || !this.logFileEnabled) {
       return this.writeChain;
     }
 

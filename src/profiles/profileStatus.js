@@ -16,6 +16,7 @@ function normalizeNumber(value, fallback) {
 const LOW_REMAINING_PERCENT_THRESHOLD = 5;
 const FULL_REMAINING_PERCENT_THRESHOLD = 99;
 const DEFAULT_PRIMARY_WINDOW_MINUTES = 5 * 60;
+const MINUTES_PER_DAY = 24 * 60;
 const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
 const RATE_LIMIT_DISPLAY_FRESHNESS_MS = 60 * 60 * 1000;
 
@@ -90,8 +91,16 @@ function formatWindowMinutes(windowMinutes) {
     return 'custom';
   }
 
-  if (minutes % (24 * 60) === 0) {
-    return `${minutes / (24 * 60)}d`;
+  if (minutes >= MINUTES_PER_DAY) {
+    const exactDays = minutes / MINUTES_PER_DAY;
+    const roundedDays = Math.round(exactDays);
+    if (roundedDays > 0 && Math.abs(minutes - roundedDays * MINUTES_PER_DAY) <= 1) {
+      return `${roundedDays}d`;
+    }
+
+    if (minutes % MINUTES_PER_DAY === 0) {
+      return `${minutes / MINUTES_PER_DAY}d`;
+    }
   }
 
   if (minutes % 60 === 0) {
@@ -105,6 +114,11 @@ function formatWindowMinutes(windowMinutes) {
   }
 
   return `${minutes}m`;
+}
+
+function formatCompactWindowMinutes(windowMinutes) {
+  const formatted = formatWindowMinutes(windowMinutes);
+  return formatted === 'custom' ? null : formatted.replace(/\s+/g, '').toUpperCase();
 }
 
 function getWindowLabel(windowState, fallbackLabel) {
@@ -387,6 +401,45 @@ function formatWindowCountdown(windowState, now = Date.now()) {
   return formatDuration(windowState.resetAt - now);
 }
 
+function isFreePlanStatus(status) {
+  return normalizePlanType(status && status.planText).toLowerCase().includes('free');
+}
+
+function getWindowMinutesUntilReset(windowState, now) {
+  const resetAt = normalizeTimestamp(windowState && windowState.resetAt);
+  if (!resetAt || resetAt <= now) {
+    return 0;
+  }
+
+  return Math.ceil((resetAt - now) / (60 * 1000));
+}
+
+function getCompactPrimaryWindowLabel(status, now = Date.now()) {
+  const primary = status && status.primary;
+  const windowMinutes = Math.max(0, Math.round(normalizeNumber(primary && primary.windowMinutes, 0)));
+
+  if (isFreePlanStatus(status)) {
+    const resetWindowMinutes = getWindowMinutesUntilReset(primary, now);
+    if (resetWindowMinutes > DEFAULT_PRIMARY_WINDOW_MINUTES) {
+      return formatCompactWindowMinutes(resetWindowMinutes) || '5H';
+    }
+  }
+
+  if (windowMinutes > 0) {
+    return formatCompactWindowMinutes(windowMinutes) || '5H';
+  }
+
+  return '5H';
+}
+
+function shouldHideMissingSecondaryWindow(status, now = Date.now()) {
+  if (status && status.secondary) {
+    return false;
+  }
+
+  return isFreePlanStatus(status) && getWindowMinutesUntilReset(status && status.primary, now) > DEFAULT_PRIMARY_WINDOW_MINUTES;
+}
+
 function formatCompactWindow(windowState, label, now = Date.now(), options = {}) {
   const includeCountdown = options.includeCountdown !== false;
   const percentageMode = options.percentageMode === 'remaining' ? 'remaining' : 'used';
@@ -410,10 +463,14 @@ function formatCompactWindow(windowState, label, now = Date.now(), options = {})
 }
 
 function formatCompactRateSummary(status, now = Date.now(), options = {}) {
-  const primaryText = formatCompactWindow(status.primary, '5H', now, {
+  const primaryText = formatCompactWindow(status.primary, getCompactPrimaryWindowLabel(status, now), now, {
     includeCountdown: options.includePrimaryCountdown !== false,
     percentageMode: options.percentageMode
   });
+  if (shouldHideMissingSecondaryWindow(status, now)) {
+    return primaryText;
+  }
+
   const secondaryText = formatCompactWindow(status.secondary, 'W', now, {
     includeCountdown: options.includeSecondaryCountdown !== false,
     percentageMode: options.percentageMode

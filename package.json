@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.26",
+  "version": "0.0.34",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -17,6 +17,9 @@
   "engines": {
     "vscode": "^1.105.0"
   },
+  "enabledApiProposals": [
+    "terminalDataWriteEvent"
+  ],
   "categories": [
     "Other"
   ],
@@ -126,6 +129,10 @@
       {
         "command": "codex-switch.profile.switch",
         "title": "Codex Multitool: Switch Profile"
+      },
+      {
+        "command": "codex-switch.profile.restoreStrategy",
+        "title": "Codex Multitool: Choose Post-Switch Chat Restore Strategy"
       },
       {
         "command": "codex-switch.profile.toggleLast",
@@ -366,6 +373,29 @@
             "type": "boolean",
             "default": true,
             "description": "Reload the VS Code window immediately after switching the active Codex profile. This is the most reliable way to restart the official Codex extension with the selected auth.json."
+          },
+          "codexSwitch.postSwitchRestoreStrategy": {
+            "type": "string",
+            "enum": [
+              "sidebarThenOpenWithVerify",
+              "nativeOnly",
+              "sidebarOnly",
+              "openWithImmediate",
+              "openWithAfterNativeSettle",
+              "multiAttemptNoClose",
+              "legacyCloseThenOpenWith"
+            ],
+            "enumDescriptions": [
+              "Open the previous Codex conversation editor and verify that the tab exists; open the sidebar only when no editor tab was captured.",
+              "Do not call Codex commands after reload; only check whether VS Code restored the previous Codex editor tab by itself.",
+              "Activate Codex and open the sidebar without trying to reopen the central conversation editor.",
+              "Run vscode.openWith for the previous Codex conversation without closing any restored tabs first.",
+              "Wait for VS Code tab restoration to settle, keep an already restored tab, and only then try vscode.openWith.",
+              "Retry editor restoration in stages without closing existing Codex tabs, with extra diagnostics.",
+              "Close matching Codex conversation tabs before vscode.openWith. Kept only for local comparison."
+            ],
+            "default": "sidebarThenOpenWithVerify",
+            "description": "Diagnostic strategy for Codex conversation editor tabs. Sidebar conversations are restored separately through the official Codex URI handler."
           },
           "codexSwitch.maskProfileNames": {
             "type": "boolean",

@@ -17,6 +17,7 @@ function createMockVscode(options = {}) {
   const commandCalls = [];
   const warningMessages = [];
   const errorMessages = [];
+  const externalUris = [];
   const closedTabs = [];
   const commandHandlers = new Map(Object.entries(options.commandHandlers || {}));
   const extensionsById = new Map(Object.entries(options.extensions || {}));
@@ -52,6 +53,13 @@ function createMockVscode(options = {}) {
       getExtension: (id) => extensionsById.get(id),
       onDidChange: () => ({ dispose() {} })
     },
+    env: {
+      uriScheme: 'vscode',
+      openExternal: async (uri) => {
+        externalUris.push(uri.toString());
+        return true;
+      }
+    },
     window: {
       tabGroups: {
         all: [],
@@ -79,6 +87,7 @@ function createMockVscode(options = {}) {
     commandCalls,
     warningMessages,
     errorMessages,
+    externalUris,
     closedTabs,
     setCommands(nextCommands) {
       commandsList = Array.isArray(nextCommands) ? nextCommands.slice() : [];

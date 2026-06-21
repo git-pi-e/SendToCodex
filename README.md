@@ -127,6 +127,8 @@ When working on this repository, connect the current folder to VS Code as a deve
 - `codexSwitch.activeProfileScope`: keep the active Codex account global or workspace-local.
 - `codexSwitch.storageMode`: choose between SecretStorage and shared remote files for saved tokens.
 - `codexSwitch.reloadWindowAfterProfileSwitch`: reload the current VS Code window after switching accounts by default; the profile switcher includes a checkbox for this.
+- Sidebar chats are restored after reload by capturing the last successful `thread/resume` ID from the official Codex log for the current VS Code window, saving the Codex log offset before reload, opening `vscode://openai.chatgpt/local/<id>` after activation, and requiring a resume confirmation from that saved offset. Missing IDs and failed confirmations are shown as errors instead of silently opening an empty sidebar.
+- `codexSwitch.postSwitchRestoreStrategy`: choose a diagnostic strategy for central Codex conversation editor tabs; it does not override sidebar route restoration.
 - The profile switcher also includes a checkbox for temporarily disabling Send to Codex without turning off profiles.
 - `codexSwitch.statusBarClickBehavior`: cycle through profiles or jump back to the previous one.
 - `codexRatelimit.sessionPath`: override the default `~/.codex/sessions` lookup path.

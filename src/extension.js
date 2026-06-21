@@ -14,12 +14,15 @@ const { SelectionLocator } = require('./terminalSelection/SelectionLocator');
 const { TerminalLogManager } = require('./terminalLogs/TerminalLogManager');
 const { CodexAvailabilityController } = require('./codex/CodexAvailabilityController');
 const { CodexCommandClient } = require('./codex/CodexCommandClient');
+const { getFileSize, getOfficialCodexLogPath } = require('./codex/CodexSidebarConversation');
 const {
   DEFAULT_PENDING_WARMUP_MAX_AGE_MS,
   DEFAULT_POST_SWITCH_WARMUP_DELAY_MS,
+  DEFAULT_POST_SWITCH_RESTORE_STRATEGY,
   captureCurrentCodexChatContext,
   isPendingCodexPostSwitchWarmupFresh,
   isRestorableCodexChatContext,
+  normalizePostSwitchRestoreStrategy,
   warmUpCodexAfterProfileSwitch
 } = require('./codex/CodexPostSwitchWarmup');
 const { EditorSelectionCodexSender } = require('./codex/EditorSelectionCodexSender');
@@ -45,10 +48,21 @@ function activate(context) {
   context.subscriptions.push(output);
 
   const logger = new FileLogger(context.logUri.fsPath, output);
+  const codexLogPath = getOfficialCodexLogPath(context.logUri.fsPath);
   logger.reloadConfiguration();
   logger.info('Send to Codex extension activated.', {
     vscodeVersion: vscode.version,
+    extensionVersion: context.extension && context.extension.packageJSON
+      ? context.extension.packageJSON.version
+      : null,
     logFilePath: logger.logFilePath
+  });
+  logger.debug('Codex restore debug build active.', {
+    vscodeVersion: vscode.version,
+    extensionVersion: context.extension && context.extension.packageJSON
+      ? context.extension.packageJSON.version
+      : null,
+    outputChannelName: OUTPUT_CHANNEL_NAME
   });
 
   const manager = new TerminalLogManager(context, output, logger);
@@ -170,7 +184,11 @@ function activate(context) {
 
   const getCodexChatContextForProfileSwitch = () => {
     const contextToRestore = captureCurrentCodexChatContext(logger, {
-      fallbackToSidebar: true
+      fallbackToSidebar: true,
+      codexLogPath
+    });
+    logger.debug('Codex restore debug: getCodexChatContextForProfileSwitch result.', {
+      contextToRestore
     });
     if (isRestorableCodexChatContext(contextToRestore)) {
       return contextToRestore;
@@ -178,38 +196,94 @@ function activate(context) {
     return undefined;
   };
 
+  const getPostSwitchRestoreStrategy = () => normalizePostSwitchRestoreStrategy(
+    vscode.workspace
+      .getConfiguration('codexSwitch')
+      .get('postSwitchRestoreStrategy', DEFAULT_POST_SWITCH_RESTORE_STRATEGY)
+  );
+
+  const getPostSwitchWarmupDelayMs = (restoreChatContext) =>
+    restoreChatContext && restoreChatContext.kind === 'sidebarConversation'
+      ? 1000
+      : DEFAULT_POST_SWITCH_WARMUP_DELAY_MS;
+
   const scheduleCodexPostSwitchWarmup = async (profileId, options = {}) => {
+    logger.debug('Codex restore debug: scheduleCodexPostSwitchWarmup called.', {
+      profileId: profileId || null,
+      changedProfile: Boolean(options.changedProfile),
+      willReloadWindow: Boolean(options.willReloadWindow)
+    });
     if (!profileId || !options.changedProfile) {
+      logger.debug('Codex restore debug: skipping schedule because switch did not change profile.', {
+        profileId: profileId || null,
+        changedProfile: Boolean(options.changedProfile)
+      });
       return;
     }
 
     const restoreChatContext = getCodexChatContextForProfileSwitch();
+    const restoreStrategy = getPostSwitchRestoreStrategy();
+    const codexLogSize = getFileSize(codexLogPath);
+    logger.debug('Codex restore debug: captured context and strategy for profile switch.', {
+      profileId,
+      restoreChatContext,
+      restoreStrategy,
+      codexLogSize
+    });
     if (options.willReloadWindow) {
       await context.workspaceState.update(CODEX_POST_SWITCH_WARMUP_KEY, {
         profileId,
         scheduledAt: Date.now(),
-        restoreChatContext
+        restoreChatContext,
+        restoreStrategy,
+        codexLogSize
+      });
+      logger.debug('Codex restore debug: pending post-switch warm-up saved to workspaceState.', {
+        key: CODEX_POST_SWITCH_WARMUP_KEY,
+        profileId,
+        restoreChatContext,
+        restoreStrategy,
+        codexLogSize
       });
       logger.info('Scheduled Codex post-switch warm-up for the next VS Code activation.', {
         profileId,
-        restoreChatKind: restoreChatContext ? restoreChatContext.kind : null
+        restoreChatKind: restoreChatContext ? restoreChatContext.kind : null,
+        restoreStrategy,
+        codexLogSize
       });
       return;
     }
 
+    const delayMs = getPostSwitchWarmupDelayMs(restoreChatContext);
     setTimeout(() => {
-      void warmUpCodexAfterProfileSwitch('profile-switch-no-reload', logger, {
-        restoreChatContext
+      logger.debug('Codex restore debug: running delayed no-reload post-switch warm-up.', {
+        profileId,
+        restoreChatContext,
+        restoreStrategy,
+        codexLogSize
       });
-    }, DEFAULT_POST_SWITCH_WARMUP_DELAY_MS);
+      void warmUpCodexAfterProfileSwitch('profile-switch-no-reload', logger, {
+        restoreChatContext,
+        restoreStrategy,
+        codexLogPath,
+        sidebarResumeStartOffset: codexLogSize
+      });
+    }, delayMs);
   };
 
   const runPendingCodexPostSwitchWarmup = async () => {
     const pending = context.workspaceState.get(CODEX_POST_SWITCH_WARMUP_KEY);
     if (!pending || !pending.scheduledAt) {
+      logger.debug('Codex restore debug: no pending post-switch warm-up found on activation.', {
+        key: CODEX_POST_SWITCH_WARMUP_KEY
+      });
       return;
     }
 
+    logger.debug('Codex restore debug: pending post-switch warm-up found on activation.', {
+      key: CODEX_POST_SWITCH_WARMUP_KEY,
+      pending
+    });
     await context.workspaceState.update(CODEX_POST_SWITCH_WARMUP_KEY, undefined);
     if (!isPendingCodexPostSwitchWarmupFresh(pending, Date.now(), DEFAULT_PENDING_WARMUP_MAX_AGE_MS)) {
       logger.warn('Skipped stale Codex post-switch warm-up.', {
@@ -220,11 +294,20 @@ function activate(context) {
       return;
     }
 
+    const delayMs = getPostSwitchWarmupDelayMs(pending.restoreChatContext);
     setTimeout(() => {
-      void warmUpCodexAfterProfileSwitch('profile-switch-after-reload', logger, {
-        restoreChatContext: pending.restoreChatContext
+      logger.debug('Codex restore debug: running delayed after-reload post-switch warm-up.', {
+        pending,
+        restoreStrategy: pending.restoreStrategy || getPostSwitchRestoreStrategy(),
+        codexLogSize: pending.codexLogSize
       });
-    }, DEFAULT_POST_SWITCH_WARMUP_DELAY_MS);
+      void warmUpCodexAfterProfileSwitch('profile-switch-after-reload', logger, {
+        restoreChatContext: pending.restoreChatContext,
+        restoreStrategy: pending.restoreStrategy || getPostSwitchRestoreStrategy(),
+        codexLogPath,
+        sidebarResumeStartOffset: pending.codexLogSize
+      });
+    }, delayMs);
   };
 
   const getCurrentAuthNoticeKey = (authData) => {
@@ -457,7 +540,10 @@ function activate(context) {
       'codexTerminalRecorder.internal.warmUpCodexAfterProfileSwitch',
       async () => {
         await warmUpCodexAfterProfileSwitch('manual-internal-command', logger, {
-          restoreChatContext: getCodexChatContextForProfileSwitch()
+          restoreChatContext: getCodexChatContextForProfileSwitch(),
+          restoreStrategy: getPostSwitchRestoreStrategy(),
+          codexLogPath,
+          sidebarResumeStartOffset: getFileSize(codexLogPath)
         });
       }
     ),
