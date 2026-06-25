@@ -114,9 +114,72 @@ test('captures a sidebar conversation ID from the official Codex log', () => {
 
     assert.deepEqual(context, {
       kind: 'sidebarConversation',
-      source: 'official-codex-log',
+      source: 'official-codex-log-resume',
       conversationId,
       route: `/local/${conversationId}`
+    });
+  } finally {
+    restore();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('captures a newly created sidebar conversation ID from the official Codex log', () => {
+  const mock = createMockVscode();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sidebar-created-'));
+  const logPath = path.join(directory, 'Codex.log');
+  const conversationId = '019ef956-3bb5-7422-b92f-66712ef49d7c';
+  fs.writeFileSync(
+    logPath,
+    `2026-06-24 13:14:46.150 [info] Conversation created conversationId=${conversationId}\n`
+  );
+
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const context = mod.captureCurrentCodexChatContext(createLogger(), {
+      fallbackToSidebar: true,
+      codexLogPath: logPath
+    });
+
+    assert.deepEqual(context, {
+      kind: 'sidebarConversation',
+      source: 'official-codex-log-created',
+      conversationId,
+      route: `/local/${conversationId}`
+    });
+  } finally {
+    restore();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('does not capture a sidebar conversation ID rejected by the official Codex log', () => {
+  const mock = createMockVscode();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sidebar-rejected-'));
+  const logPath = path.join(directory, 'Codex.log');
+  const rejectedId = '019ef699-6609-7eb1-b43d-28e0ad075654';
+  const goodId = '019ef698-7003-71a0-93f0-ce4b95c1dc38';
+  fs.writeFileSync(
+    logPath,
+    [
+      `2026-06-24 00:28:14.528 [info] Conversation created conversationId=${goodId}`,
+      `2026-06-24 00:28:20.000 [info] Conversation created conversationId=${rejectedId}`,
+      `2026-06-24 00:28:54.112 [error] No turns for conversation conversationId=${rejectedId}`
+    ].join('\n')
+  );
+
+  const { mod, restore } = loadWarmupModule(mock);
+  try {
+    const context = mod.captureCurrentCodexChatContext(createLogger(), {
+      fallbackToSidebar: true,
+      codexLogPath: logPath
+    });
+
+    assert.deepEqual(context, {
+      kind: 'sidebarConversation',
+      source: 'official-codex-log-created',
+      conversationId: goodId,
+      route: `/local/${goodId}`
     });
   } finally {
     restore();

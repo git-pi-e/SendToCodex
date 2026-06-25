@@ -9,6 +9,7 @@ const {
   findLastResumedConversation,
   getFileSize,
   getOfficialCodexLogPath,
+  hasRouteHandlingSuccess,
   waitForConversationResume
 } = require('../../src/codex/CodexSidebarConversation');
 
@@ -33,6 +34,27 @@ test('uses the last successful resume event in the Codex log', () => {
       `[info] maybe_resume_success conversationId=${second}\n`
   );
   assert.equal(match.conversationId, second);
+  assert.equal(match.source, 'official-codex-log-resume');
+});
+
+test('uses a created conversation event when no resume event exists', () => {
+  const conversationId = '019ef956-3bb5-7422-b92f-66712ef49d7c';
+  const match = findLastResumedConversation(
+    `[info] Conversation created conversationId=${conversationId}\n`
+  );
+  assert.equal(match.conversationId, conversationId);
+  assert.equal(match.source, 'official-codex-log-created');
+});
+
+test('skips a conversation ID rejected by a later no-turns event', () => {
+  const first = '019ef698-7003-71a0-93f0-ce4b95c1dc38';
+  const rejected = '019ef699-6609-7eb1-b43d-28e0ad075654';
+  const match = findLastResumedConversation(
+    `[info] Conversation created conversationId=${first}\n` +
+      `[info] Conversation created conversationId=${rejected}\n` +
+      `[error] No turns for conversation conversationId=${rejected}\n`
+  );
+  assert.equal(match.conversationId, first);
 });
 
 test('verifies a new successful resume appended after the URI handler call', async () => {
@@ -69,6 +91,81 @@ test('fails explicitly when Codex logs a resume failure without a later success'
   fs.writeFileSync(
     logPath,
     `[error] Failed to resume conversation conversationId=${conversationId} error={}\n`
+  );
+
+  try {
+    await assert.rejects(
+      waitForConversationResume(logPath, conversationId, {
+        startOffset: 0,
+        timeoutMs: 25,
+        pollIntervalMs: 5
+      }),
+      /logged a thread\/resume failure/
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('recognizes Codex URI handler route acceptance for a sidebar conversation', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sidebar-route-'));
+  const logPath = path.join(directory, 'Codex.log');
+  const conversationId = '019ef941-3f4b-74f3-ac13-47aad0835b78';
+  fs.writeFileSync(
+    logPath,
+    `[info] Handling URI path=/local/${conversationId}\n`
+  );
+
+  try {
+    assert.equal(
+      hasRouteHandlingSuccess(`[info] Handling URI path=/local/${conversationId}`, conversationId),
+      true
+    );
+    const result = await waitForConversationResume(logPath, conversationId, {
+      startOffset: 0,
+      timeoutMs: 250,
+      pollIntervalMs: 5,
+      routeHandlingSettleMs: 5
+    });
+    assert.equal(result.resumed, true);
+    assert.equal(result.routeHandled, true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('does not accept URI handler route acceptance when Codex later reports no turns', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sidebar-route-failure-'));
+  const logPath = path.join(directory, 'Codex.log');
+  const conversationId = '019ef941-3f4b-74f3-ac13-47aad0835b78';
+  fs.writeFileSync(
+    logPath,
+    `[info] Handling URI path=/local/${conversationId}\n` +
+      `[error] No turns for conversation conversationId=${conversationId}\n`
+  );
+
+  try {
+    await assert.rejects(
+      waitForConversationResume(logPath, conversationId, {
+        startOffset: 0,
+        timeoutMs: 25,
+        pollIntervalMs: 5,
+        routeHandlingSettleMs: 1
+      }),
+      /logged a thread\/resume failure/
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('fails explicitly when Codex logs no turns for the restored conversation', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sidebar-no-turns-'));
+  const logPath = path.join(directory, 'Codex.log');
+  const conversationId = '019ef699-6609-7eb1-b43d-28e0ad075654';
+  fs.writeFileSync(
+    logPath,
+    `[error] No turns for conversation conversationId=${conversationId}\n`
   );
 
   try {

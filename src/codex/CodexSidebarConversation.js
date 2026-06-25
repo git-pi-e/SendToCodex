@@ -12,6 +12,15 @@ const RESUME_SUCCESS_PATTERN = new RegExp(
   `maybe_resume_success\\s+conversationId=(${CODEX_CONVERSATION_ID_PATTERN})`,
   'gi'
 );
+const CONVERSATION_CREATED_PATTERN = new RegExp(
+  `Conversation created\\s+conversationId=(${CODEX_CONVERSATION_ID_PATTERN})`,
+  'gi'
+);
+const NO_TURNS_PATTERN = new RegExp(
+  `No turns for conversation\\s+conversationId=(${CODEX_CONVERSATION_ID_PATTERN})`,
+  'gi'
+);
+const HANDLING_URI_PREFIX_PATTERN = /Handling URI\s+path=\/local\//i;
 
 function getOfficialCodexLogPath(extensionLogDirectory) {
   const ownLogDirectory = String(extensionLogDirectory || '').trim();
@@ -45,7 +54,60 @@ function readLogTail(filePath, maxBytes = DEFAULT_LOG_TAIL_BYTES) {
   }
 }
 
+function collectConversationEvents(text) {
+  const source = String(text || '');
+  const events = [];
+  const patterns = [
+    { pattern: RESUME_SUCCESS_PATTERN, source: 'official-codex-log-resume' },
+    { pattern: CONVERSATION_CREATED_PATTERN, source: 'official-codex-log-created' },
+    { pattern: NO_TURNS_PATTERN, source: 'official-codex-log-no-turns' }
+  ];
+
+  for (const item of patterns) {
+    item.pattern.lastIndex = 0;
+    let match;
+    while ((match = item.pattern.exec(source)) !== null) {
+      events.push({
+        conversationId: match[1].toLowerCase(),
+        index: match.index,
+        source: item.source
+      });
+    }
+    item.pattern.lastIndex = 0;
+  }
+
+  events.sort((left, right) => left.index - right.index);
+  return events;
+}
+
 function findLastResumedConversation(text) {
+  const events = collectConversationEvents(text);
+  const rejectedConversationIds = new Set();
+  let lastMatch = null;
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.source === 'official-codex-log-no-turns') {
+      rejectedConversationIds.add(event.conversationId);
+      continue;
+    }
+
+    if (rejectedConversationIds.has(event.conversationId)) {
+      continue;
+    }
+
+    lastMatch = {
+      conversationId: event.conversationId,
+      index: event.index,
+      source: event.source
+    };
+    break;
+  }
+
+  return lastMatch;
+}
+
+function findLastMaybeResumeSuccess(text) {
   RESUME_SUCCESS_PATTERN.lastIndex = 0;
   let lastMatch = null;
   let match;
@@ -80,7 +142,7 @@ function captureSidebarConversationFromLog(filePath, logger, options = {}) {
 
     const context = {
       kind: 'sidebarConversation',
-      source: 'official-codex-log',
+      source: resumed.source || 'official-codex-log',
       conversationId: resumed.conversationId,
       route: `/local/${resumed.conversationId}`
     };
@@ -133,10 +195,20 @@ function hasResumeSuccess(text, conversationId) {
   );
 }
 
+function hasRouteHandlingSuccess(text, conversationId) {
+  const source = String(text || '');
+  if (!HANDLING_URI_PREFIX_PATTERN.test(source)) {
+    return false;
+  }
+
+  const escapedId = String(conversationId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`Handling URI\\s+path=/local/${escapedId}(?:\\s|$)`, 'i').test(source);
+}
+
 function hasResumeFailure(text, conversationId) {
   const escapedId = String(conversationId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(
-    `(?:Failed to resume conversation|Request failed)\\s+conversationId=${escapedId}(?:\\s|$)`,
+    `(?:Failed to resume conversation|Request failed|No turns for conversation)\\s+conversationId=${escapedId}(?:\\s|$)`,
     'i'
   ).test(String(text || ''));
 }
@@ -144,9 +216,11 @@ function hasResumeFailure(text, conversationId) {
 async function waitForConversationResume(filePath, conversationId, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 60_000));
   const pollIntervalMs = Math.max(50, Number(options.pollIntervalMs || 250));
+  const routeHandlingSettleMs = Math.max(0, Number(options.routeHandlingSettleMs || 1500));
   const startOffset = Math.max(0, Number(options.startOffset) || 0);
   const startedAt = Date.now();
   let observedFailure = false;
+  let routeHandledAt = 0;
 
   while (Date.now() - startedAt <= timeoutMs) {
     try {
@@ -158,6 +232,16 @@ async function waitForConversationResume(filePath, conversationId, options = {})
         };
       }
       observedFailure = observedFailure || hasResumeFailure(appended, conversationId);
+      if (!routeHandledAt && hasRouteHandlingSuccess(appended, conversationId)) {
+        routeHandledAt = Date.now();
+      }
+      if (!observedFailure && routeHandledAt && Date.now() - routeHandledAt >= routeHandlingSettleMs) {
+        return {
+          resumed: true,
+          routeHandled: true,
+          waitedMs: Date.now() - startedAt
+        };
+      }
     } catch (error) {
       if (error && error.code !== 'ENOENT') {
         throw error;
@@ -179,9 +263,12 @@ module.exports = {
   CODEX_CONVERSATION_ID_PATTERN,
   DEFAULT_LOG_TAIL_BYTES,
   captureSidebarConversationFromLog,
+  collectConversationEvents,
   findLastResumedConversation,
+  findLastMaybeResumeSuccess,
   getFileSize,
   getOfficialCodexLogPath,
+  hasRouteHandlingSuccess,
   hasResumeFailure,
   hasResumeSuccess,
   waitForConversationResume
