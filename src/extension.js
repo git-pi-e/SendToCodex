@@ -42,6 +42,7 @@ const { TerminalSelectionStatusBarController } = require('./ui/TerminalSelection
 
 const CODEX_POST_SWITCH_WARMUP_KEY = 'codexSwitch.pendingCodexPostSwitchWarmup';
 const AUTH_WATCHER_SETTLE_TIMEOUT_MS = 15 * 1000;
+const ACTIVE_WINDOW_USAGE_HEARTBEAT_MS = 30 * 1000;
 
 function activate(context) {
   const output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
@@ -118,6 +119,27 @@ function activate(context) {
   let lastUnmanagedAuthNoticeKey;
   let unmanagedAuthNoticeInFlight = false;
   let expectedWindowAuthChange;
+
+  const updateActiveWindowProfileUsage = async (activeProfileId) => {
+    try {
+      if (!areProfileFeaturesEnabled() || !activeProfileId) {
+        profileManager.clearActiveWindowProfileUsage();
+        return;
+      }
+
+      profileManager.recordActiveWindowProfileUsage(activeProfileId);
+    } catch (error) {
+      logger.warn('Failed to update Codex active-window profile usage.', {
+        error: error && error.message ? error.message : String(error),
+        activeProfileId: activeProfileId || null
+      });
+    }
+  };
+
+  const refreshActiveWindowProfileUsage = async () => {
+    const activeProfileId = await profileManager.getActiveProfileId();
+    await updateActiveWindowProfileUsage(activeProfileId);
+  };
 
   const getExpectedWindowAuthChange = () => {
     if (!expectedWindowAuthChange) {
@@ -386,11 +408,15 @@ function activate(context) {
     }
   };
 
-  const refreshProfileUi = async () => {
+  const refreshProfileUi = async (options = {}) => {
     const refreshId = ++latestProfileUiRefreshId;
+    const shouldUpdateActiveWindowUsage = options.updateActiveWindowUsage !== false;
 
     try {
       if (!areProfileFeaturesEnabled()) {
+        if (shouldUpdateActiveWindowUsage) {
+          profileManager.clearActiveWindowProfileUsage();
+        }
         profileStatusBarController.update(null, []);
         return;
       }
@@ -400,9 +426,14 @@ function activate(context) {
       if (refreshId !== latestProfileUiRefreshId) {
         return;
       }
+      if (shouldUpdateActiveWindowUsage) {
+        await updateActiveWindowProfileUsage(activeProfileId);
+      }
+      const otherWindowProfileUsageByProfileId =
+        profileManager.getOtherActiveWindowProfileUsageByProfileId();
 
       if (!activeProfileId) {
-        profileStatusBarController.update(null, profiles);
+        profileStatusBarController.update(null, profiles, otherWindowProfileUsageByProfileId);
         void maybeNotifyUnmanagedCurrentProfile();
         return;
       }
@@ -417,7 +448,11 @@ function activate(context) {
         return;
       }
 
-      profileStatusBarController.update(activeProfile, profiles);
+      profileStatusBarController.update(
+        activeProfile,
+        profiles,
+        otherWindowProfileUsageByProfileId
+      );
       void maybeNotifyUnmanagedCurrentProfile();
     } catch (error) {
       logger.error('Failed to refresh the Codex profile status UI.', {
@@ -428,6 +463,11 @@ function activate(context) {
   };
 
   const handleProfileWatcherChange = async (event = {}) => {
+    if (event.source === 'windowUsage') {
+      await refreshProfileUi({ updateActiveWindowUsage: false });
+      return;
+    }
+
     if (!areProfileFeaturesEnabled()) {
       await refreshProfileUi();
       return;
@@ -508,6 +548,11 @@ function activate(context) {
     rateLimitMonitor.onDidChange(() => {
       void refreshProfileUi();
     }),
+    {
+      dispose() {
+        profileManager.clearActiveWindowProfileUsage();
+      }
+    },
     ...profileManager.createWatchers((event) => {
       void handleProfileWatcherChange(event);
     }),
@@ -654,6 +699,15 @@ function activate(context) {
       }
     })
   );
+
+  const activeWindowUsageTimer = setInterval(() => {
+    void refreshActiveWindowProfileUsage();
+  }, ACTIVE_WINDOW_USAGE_HEARTBEAT_MS);
+  context.subscriptions.push({
+    dispose() {
+      clearInterval(activeWindowUsageTimer);
+    }
+  });
 
   codexAvailabilityController.activate();
   rateLimitMonitor.activate();

@@ -36,7 +36,6 @@ GitHub project: https://github.com/void2byte/SendToCodex
 - Use `Codex Multitool: Manage Profiles` to import accounts from the current `~/.codex/auth.json`, from another file, or from a previous exported profile bundle.
 - The account status bar item shows compact 5-hour and weekly limit state for the active account.
 - The profile switcher QuickPick shows each saved account with compact per-profile limit state, plus toggles for VS Code reload-after-switch and Send to Codex on or off.
-- `Codex Rate Limit: Show Details` opens a panel with the active profile's latest observed limit windows plus a summary table for every saved profile.
 
 ## How terminal sending works
 
@@ -105,7 +104,6 @@ When working on this repository, connect the current folder to VS Code as a deve
 - `Codex Multitool: Export Profiles`
 - `Codex Multitool: Import Profiles`
 - `Codex Rate Limit: Refresh Statistics`
-- `Codex Rate Limit: Show Details`
 
 ## Settings
 
@@ -131,6 +129,10 @@ When working on this repository, connect the current folder to VS Code as a deve
 - `codexSwitch.postSwitchRestoreStrategy`: choose a diagnostic strategy for central Codex conversation editor tabs; it does not override sidebar route restoration.
 - The profile switcher also includes a checkbox for temporarily disabling Send to Codex without turning off profiles.
 - `codexSwitch.statusBarClickBehavior`: cycle through profiles or jump back to the previous one.
+- `codexSwitch.profileQuickPick.hiddenSections`: hide selected account groups from the profile switcher popup.
+- `codexSwitch.profileQuickPick.sectionOrder`: choose account group order in the profile switcher popup.
+- `codexSwitch.profileQuickPick.profileSort`: choose account ordering inside each popup group, including reset-time and remaining-limit presets such as next reset soon, weekly reset soon, most remaining, least remaining, freshest data, and stalest data.
+- `codexSwitch.profileQuickPick.roundLowWeeklyRemainingToZero`: optionally display weekly remaining usage below 5% as 0% in the profile switcher popup.
 - `codexRatelimit.sessionPath`: override the default `~/.codex/sessions` lookup path.
 - `codexRatelimit.refreshInterval`: choose how often cooldown data refreshes.
 - `codexRatelimit.color.*`: customize warning and critical colors for the combined profile status bar item.

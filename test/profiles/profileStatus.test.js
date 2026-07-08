@@ -58,6 +58,37 @@ test('rate-limit display uses fresh Usage API observations', () => {
   );
 });
 
+test('compact rate summary shows weekly remaining limit and reset countdown', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile({
+      observedAt: now - 10_000,
+      sourceFile: USAGE_API_SOURCE,
+      primary: {
+        usedPercent: 40,
+        resetAt: now + 60 * 60 * 1000,
+        windowMinutes: 300
+      },
+      secondary: {
+        usedPercent: 25,
+        resetAt: now + 24 * 60 * 60 * 1000,
+        windowMinutes: 10_080
+      }
+    }),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining'
+    }),
+    '5H 60% 1h | W 75% 1d'
+  );
+});
+
 test('nearly full remaining limits display as 100 percent', () => {
   const now = Date.parse('2026-05-20T10:00:00.000Z');
   const status = getProfileRateStatus(
@@ -356,4 +387,49 @@ test('weekly zero remaining forces primary remaining to zero', () => {
 
   assert.equal(getWindowRemainingPercent(status.secondary, now), 0);
   assert.equal(getWindowRemainingPercent(status.primary, now), 0);
+});
+
+test('low nonzero weekly remaining is not displayed as zero by default', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile({
+      observedAt: now - 10_000,
+      sourceFile: USAGE_API_SOURCE,
+      primary: {
+        usedPercent: 5,
+        resetAt: now + 60 * 60 * 1000,
+        windowMinutes: 300
+      },
+      secondary: {
+        usedPercent: 96,
+        resetAt: now + 24 * 60 * 60 * 1000,
+        windowMinutes: 10_080
+      }
+    }),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(getWindowRemainingPercent(status.secondary, now), 4);
+  assert.equal(
+    getWindowRemainingPercent(status.secondary, now, { roundLowRemainingToZero: true }),
+    0
+  );
+  assert.match(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining'
+    }),
+    /W 4%/
+  );
+  assert.match(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining',
+      roundLowWeeklyRemainingToZero: true
+    }),
+    /W 0%/
+  );
 });

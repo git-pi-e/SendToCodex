@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.38",
+  "version": "0.0.48",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -166,11 +166,6 @@
         "command": "codex-ratelimit.refreshStats",
         "title": "Codex Rate Limit: Refresh Statistics",
         "icon": "$(sync)"
-      },
-      {
-        "command": "codex-ratelimit.showDetails",
-        "title": "Codex Rate Limit: Show Details",
-        "icon": "$(table)"
       },
       {
         "command": "codex-ratelimit.openSettings",
@@ -448,6 +443,118 @@
               "Cycle through all saved profiles.",
               "Toggle between the active profile and the previous profile."
             ]
+          },
+          "codexSwitch.profileQuickPick.hiddenSections": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "string",
+              "enum": [
+                "needsAuth",
+                "weeklyLow",
+                "coolingDown",
+                "ready",
+                "staleEstimate",
+                "otherProfiles"
+              ]
+            },
+            "description": "Account status groups hidden from the Codex account switcher popup."
+          },
+          "codexSwitch.profileQuickPick.sectionOrder": {
+            "type": "array",
+            "default": [
+              "needsAuth",
+              "weeklyLow",
+              "coolingDown",
+              "ready",
+              "staleEstimate",
+              "otherProfiles"
+            ],
+            "items": {
+              "type": "string",
+              "enum": [
+                "needsAuth",
+                "weeklyLow",
+                "coolingDown",
+                "ready",
+                "staleEstimate",
+                "otherProfiles"
+              ]
+            },
+            "description": "Display order for account status groups in the Codex account switcher popup."
+          },
+          "codexSwitch.profileQuickPick.profileSort": {
+            "type": "string",
+            "enum": [
+              "availability",
+              "nextResetSoon",
+              "nextResetLate",
+              "fiveHourResetSoon",
+              "weeklyResetSoon",
+              "mostRemaining",
+              "leastRemaining",
+              "freshestObservation",
+              "stalestObservation",
+              "name",
+              "plan",
+              "group"
+            ],
+            "default": "availability",
+            "description": "Sort order for accounts inside each Codex account switcher popup group.",
+            "enumDescriptions": [
+              "Use the same availability-first order as the account status display.",
+              "Show accounts whose next limit window resets soonest first.",
+              "Show accounts whose next limit window resets latest first.",
+              "Show accounts whose 5-hour window resets soonest first.",
+              "Show accounts whose weekly window resets soonest first.",
+              "Show accounts with the most remaining usable limit first.",
+              "Show accounts with the least remaining usable limit first.",
+              "Show accounts with the freshest limit observation first.",
+              "Show accounts with the stalest or missing limit observation first.",
+              "Sort by displayed profile name.",
+              "Sort by plan label, then profile name.",
+              "Sort by custom account group, then profile name."
+            ]
+          },
+          "codexSwitch.profileQuickPick.secondaryProfileSort": {
+            "type": "string",
+            "enum": [
+              "none",
+              "availability",
+              "nextResetSoon",
+              "nextResetLate",
+              "fiveHourResetSoon",
+              "weeklyResetSoon",
+              "mostRemaining",
+              "leastRemaining",
+              "freshestObservation",
+              "stalestObservation",
+              "name",
+              "plan",
+              "group"
+            ],
+            "default": "weeklyResetSoon",
+            "description": "Tie-break sort order for accounts whose primary Codex account switcher popup sort value is equal.",
+            "enumDescriptions": [
+              "Do not apply a secondary sort.",
+              "Use the same availability-first order as the account status display.",
+              "Show accounts whose next limit window resets soonest first.",
+              "Show accounts whose next limit window resets latest first.",
+              "Show accounts whose 5-hour window resets soonest first.",
+              "Show accounts whose weekly window resets soonest first, ignoring accounts with 0 percent weekly remaining.",
+              "Show accounts with the most remaining usable limit first.",
+              "Show accounts with the least remaining usable limit first.",
+              "Show accounts with the freshest limit observation first.",
+              "Show accounts with the stalest or missing limit observation first.",
+              "Sort by displayed profile name.",
+              "Sort by plan label, then profile name.",
+              "Sort by custom account group, then profile name."
+            ]
+          },
+          "codexSwitch.profileQuickPick.roundLowWeeklyRemainingToZero": {
+            "type": "boolean",
+            "default": false,
+            "description": "Display weekly remaining usage below 5 percent as 0 percent in the account switcher popup."
           }
         }
       },

@@ -23,6 +23,7 @@ const {
 
 const CURRENT_PROFILES_VERSION = 2;
 const PROFILES_FILENAME = 'profiles.json';
+const ACTIVE_WINDOW_USAGES_FILENAME = 'active-window-usages.json';
 const AUTH_BACKUPS_DIRNAME = 'auth-backups';
 const ACTIVITY_LOG_FILENAME = 'profile-activity.jsonl';
 const ACTIVE_PROFILE_KEY = 'codexSwitch.activeProfileId';
@@ -33,6 +34,7 @@ const OLD_ACTIVE_PROFILE_KEY = 'codexUsage.activeProfileId';
 const OLD_LAST_PROFILE_KEY = 'codexUsage.lastProfileId';
 const OLD_SECRET_PREFIX = 'codexUsage.profile.';
 const NEW_SECRET_PREFIX = 'codexSwitch.profile.';
+const ACTIVE_WINDOW_USAGE_STALE_MS = 2 * 60 * 1000;
 
 function asObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -56,6 +58,10 @@ function asTimestamp(value) {
     return null;
   }
   return Math.round(numeric);
+}
+
+function normalizeProfileGroup(value) {
+  return asOptionalString(value) || 'Ungrouped';
 }
 
 function clampPercent(value) {
@@ -149,6 +155,7 @@ function normalizeProfileSummary(profile) {
     name: asOptionalString(source.name) || 'profile',
     email: asOptionalString(source.email) || 'Unknown',
     planType: asOptionalString(source.planType) || 'Unknown',
+    group: normalizeProfileGroup(source.group),
     accountId: asOptionalString(source.accountId),
     defaultOrganizationId: asOptionalString(source.defaultOrganizationId),
     defaultOrganizationTitle: asOptionalString(source.defaultOrganizationTitle),
@@ -188,6 +195,43 @@ function normalizeProfilesFile(rawValue) {
   };
 }
 
+function normalizeActiveWindowUsageFile(rawValue, now = Date.now()) {
+  let parsed = rawValue;
+  if (typeof rawValue === 'string') {
+    parsed = JSON.parse(rawValue);
+  }
+
+  const sourceWindows =
+    parsed && typeof parsed === 'object' && Array.isArray(parsed.windows)
+      ? parsed.windows
+      : [];
+  const windows = sourceWindows
+    .map((entry) => {
+      const source = asObject(entry) || {};
+      const updatedAt = asTimestamp(source.updatedAt);
+      return {
+        windowId: asOptionalString(source.windowId),
+        profileId: asOptionalString(source.profileId),
+        workspaceLabel: asOptionalString(source.workspaceLabel) || 'VS Code window',
+        pid: Number.isFinite(Number(source.pid)) ? Number(source.pid) : null,
+        updatedAt
+      };
+    })
+    .filter((entry) => {
+      return Boolean(
+        entry.windowId &&
+          entry.profileId &&
+          entry.updatedAt &&
+          now - entry.updatedAt <= ACTIVE_WINDOW_USAGE_STALE_MS
+      );
+    });
+
+  return {
+    version: 1,
+    windows
+  };
+}
+
 function serializeComparable(value) {
   return JSON.stringify(value == null ? null : value);
 }
@@ -221,11 +265,13 @@ class ProfileManager {
     this.windowActiveProfileId = undefined;
     this.windowActiveProfileActivatedAt = undefined;
     this.notifiedProfilesReadError = false;
+    this.windowUsageId = randomUUID();
     this.onDidChangeEmitter = new vscode.EventEmitter();
     this.onDidChange = this.onDidChangeEmitter.event;
   }
 
   dispose() {
+    this.clearActiveWindowProfileUsage();
     this.onDidChangeEmitter.dispose();
   }
 
@@ -360,6 +406,10 @@ class ProfileManager {
     return path.join(this.getStorageDir(), PROFILES_FILENAME);
   }
 
+  getActiveWindowUsagesPath() {
+    return path.join(this.getStorageDir(), ACTIVE_WINDOW_USAGES_FILENAME);
+  }
+
   getAuthBackupsDir() {
     return path.join(this.getStorageDir(), AUTH_BACKUPS_DIRNAME);
   }
@@ -425,6 +475,111 @@ class ProfileManager {
     fs.writeFileSync(this.getProfilesPath(), JSON.stringify(normalized, null, 2), {
       encoding: 'utf8'
     });
+  }
+
+  readActiveWindowUsageFile() {
+    this.ensureStorageDir();
+    const filePath = this.getActiveWindowUsagesPath();
+    if (!fs.existsSync(filePath)) {
+      return { version: 1, windows: [] };
+    }
+
+    try {
+      if (this.isRemoteFilesMode()) {
+        return normalizeActiveWindowUsageFile(readJsonFile(filePath));
+      }
+
+      return normalizeActiveWindowUsageFile(fs.readFileSync(filePath, 'utf8'));
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      this.log('error', 'Failed to read Codex active-window usage file.', {
+        error: message,
+        filePath
+      });
+      throw new Error(`Failed to read Codex active-window usage file at ${filePath}: ${message}`);
+    }
+  }
+
+  writeActiveWindowUsageFile(data) {
+    this.ensureStorageDir();
+    const normalized = normalizeActiveWindowUsageFile(data);
+    if (this.isRemoteFilesMode()) {
+      writeJsonFile(this.getActiveWindowUsagesPath(), normalized);
+      return;
+    }
+
+    fs.writeFileSync(this.getActiveWindowUsagesPath(), JSON.stringify(normalized, null, 2), {
+      encoding: 'utf8'
+    });
+  }
+
+  getWindowUsageWorkspaceLabel() {
+    if (vscode.workspace.name) {
+      return vscode.workspace.name;
+    }
+
+    const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+    if (folder && folder.uri && folder.uri.fsPath) {
+      return path.basename(folder.uri.fsPath) || folder.uri.fsPath;
+    }
+
+    return 'VS Code window';
+  }
+
+  recordActiveWindowProfileUsage(profileId) {
+    const normalizedProfileId = asOptionalString(profileId);
+    if (!normalizedProfileId) {
+      return this.clearActiveWindowProfileUsage();
+    }
+
+    const file = this.readActiveWindowUsageFile();
+    const windows = file.windows.filter((entry) => entry.windowId !== this.windowUsageId);
+    windows.push({
+      windowId: this.windowUsageId,
+      profileId: normalizedProfileId,
+      workspaceLabel: this.getWindowUsageWorkspaceLabel(),
+      pid: typeof process !== 'undefined' ? process.pid : null,
+      updatedAt: Date.now()
+    });
+    this.writeActiveWindowUsageFile({
+      version: 1,
+      windows
+    });
+    return true;
+  }
+
+  clearActiveWindowProfileUsage() {
+    try {
+      const file = this.readActiveWindowUsageFile();
+      const windows = file.windows.filter((entry) => entry.windowId !== this.windowUsageId);
+      if (windows.length === file.windows.length) {
+        return false;
+      }
+
+      this.writeActiveWindowUsageFile({
+        version: 1,
+        windows
+      });
+      return true;
+    } catch (error) {
+      this.log('warn', 'Failed to clear Codex active-window usage.', {
+        error: error && error.message ? error.message : String(error)
+      });
+      return false;
+    }
+  }
+
+  getOtherActiveWindowProfileUsageByProfileId() {
+    const usageByProfileId = new Map();
+    const file = this.readActiveWindowUsageFile();
+    file.windows
+      .filter((entry) => entry.windowId !== this.windowUsageId)
+      .forEach((entry) => {
+        const entries = usageByProfileId.get(entry.profileId) || [];
+        entries.push(entry);
+        usageByProfileId.set(entry.profileId, entries);
+      });
+    return usageByProfileId;
   }
 
   secretKey(profileId) {
@@ -725,6 +880,7 @@ class ProfileManager {
         authJson: cloneJson(tokens.authJson)
       },
       importedMetadata: {
+        group: asOptionalString(profile.group),
         cooldownUntil: asTimestamp(profile.cooldownUntil),
         rateLimitState: normalizeRateLimitState(profile.rateLimitState)
       }
@@ -810,6 +966,7 @@ class ProfileManager {
     const current = file.profiles[index];
     const next = normalizeProfileSummary({
       ...current,
+      group: metadata && metadata.group != null ? normalizeProfileGroup(metadata.group) : current.group,
       cooldownUntil:
         metadata && metadata.cooldownUntil != null ? metadata.cooldownUntil : current.cooldownUntil,
       rateLimitState:
@@ -1192,6 +1349,28 @@ class ProfileManager {
     return true;
   }
 
+  async setProfileGroup(profileId, groupName) {
+    const file = await this.readProfilesFile();
+    const index = file.profiles.findIndex((profile) => profile.id === profileId);
+    if (index === -1) {
+      return false;
+    }
+
+    const nextGroup = normalizeProfileGroup(groupName);
+    if (file.profiles[index].group === nextGroup) {
+      return true;
+    }
+
+    file.profiles[index] = normalizeProfileSummary({
+      ...file.profiles[index],
+      group: nextGroup,
+      updatedAt: getNowIso()
+    });
+    this.writeProfilesFile(file);
+    this.emitChanged();
+    return true;
+  }
+
   async deleteProfile(profileId) {
     const file = await this.readProfilesFile();
     const beforeCount = file.profiles.length;
@@ -1548,6 +1727,7 @@ class ProfileManager {
 
   createWatchers(onChanged) {
     const disposables = [];
+    this.ensureStorageDir();
     const fire = (source) => {
       try {
         onChanged({ source });
@@ -1566,6 +1746,14 @@ class ProfileManager {
       authWatcher.onDidDelete(() => fire('auth'));
       disposables.push(authWatcher);
     }
+
+    const activeWindowUsageWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(this.getStorageDir()), ACTIVE_WINDOW_USAGES_FILENAME)
+    );
+    activeWindowUsageWatcher.onDidCreate(() => fire('windowUsage'));
+    activeWindowUsageWatcher.onDidChange(() => fire('windowUsage'));
+    activeWindowUsageWatcher.onDidDelete(() => fire('windowUsage'));
+    disposables.push(activeWindowUsageWatcher);
 
     if (this.isRemoteFilesMode()) {
       const profilesWatcher = vscode.workspace.createFileSystemWatcher(

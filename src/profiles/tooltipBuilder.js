@@ -8,17 +8,46 @@ const {
   isProfileWeeklyTokensLow,
   sortProfilesForDisplay
 } = require('./profileStatus');
-const { displayProfileEmail, displayProfileName } = require('./privacy');
+const { displayProfileName } = require('./privacy');
 
 function escapeMarkdown(text) {
-  return String(text || '').replace(/\\/g, '\\\\').replace(/([`*_{}[\]()#+\-.!])/g, '\\$1');
+  return String(text || '').replace(/\\/g, '\\\\').replace(/([`*_{}[\]()#+\-.!|])/g, '\\$1');
 }
 
 function buildCommandUri(command, args) {
   return `command:${command}?${encodeURIComponent(JSON.stringify(args || []))}`;
 }
 
-function createProfileTooltip(activeProfile, profiles) {
+function getOtherWindowUsageEntries(profileId, otherWindowProfileUsageByProfileId) {
+  if (!profileId || !otherWindowProfileUsageByProfileId) {
+    return [];
+  }
+
+  if (typeof otherWindowProfileUsageByProfileId.get === 'function') {
+    return otherWindowProfileUsageByProfileId.get(profileId) || [];
+  }
+
+  return otherWindowProfileUsageByProfileId[profileId] || [];
+}
+
+function formatOtherWindowUsage(entries) {
+  if (!entries || !entries.length) {
+    return '';
+  }
+
+  const labels = [...new Set(
+    entries
+      .map((entry) => String((entry && entry.workspaceLabel) || '').trim())
+      .filter(Boolean)
+  )];
+  const visibleLabels = labels.slice(0, 2).map(escapeMarkdown);
+  const hiddenCount = Math.max(0, labels.length - visibleLabels.length);
+  const suffix = hiddenCount > 0 ? `, +${hiddenCount}` : '';
+  const windowText = entries.length === 1 ? '1 other window' : `${entries.length} other windows`;
+  return `${escapeMarkdown(windowText)}${visibleLabels.length ? `: ${visibleLabels.join(', ')}${suffix}` : ''}`;
+}
+
+function createProfileTooltip(activeProfile, profiles, otherWindowProfileUsageByProfileId) {
   const tooltip = new vscode.MarkdownString();
   tooltip.supportThemeIcons = true;
   tooltip.supportHtml = true;
@@ -27,9 +56,7 @@ function createProfileTooltip(activeProfile, profiles) {
       'codex-switch.profile.manage',
       'codex-switch.profile.activate',
       'codex-switch.profile.switch',
-      'codexTerminalRecorder.openSettings',
-      'codex-ratelimit.refreshStats',
-      'codex-ratelimit.showDetails'
+      'codexTerminalRecorder.openSettings'
     ]
   };
 
@@ -40,34 +67,36 @@ function createProfileTooltip(activeProfile, profiles) {
     const now = Date.now();
     const sortedProfiles = sortProfilesForDisplay(profiles, activeId, now);
 
-    for (const profile of sortedProfiles) {
+    tooltip.appendMarkdown('| Account | Plan | Limits | Other windows |\n');
+    tooltip.appendMarkdown('| --- | --- | --- | --- |\n');
+
+    sortedProfiles.forEach((profile) => {
       const status = getProfileRateStatus(profile, now, { activeProfileId: activeId });
       const switchUri = buildCommandUri('codex-switch.profile.activate', [profile.id]);
       const plan = escapeMarkdown(formatPlanType(profile.planType));
       const linkedName = `[${escapeMarkdown(displayProfileName(profile))}](${switchUri})`;
-      const email = profile.email && profile.email !== 'Unknown'
-        ? ` - ${escapeMarkdown(displayProfileEmail(profile.email))}`
-        : '';
-      const activePrefix = activeId === profile.id ? '**ACTIVE** ' : '';
+      const activeBadge = activeId === profile.id ? '**ACTIVE** ' : '';
       const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, {
         activeProfileId: activeId
       });
-      const lowWeeklySuffix = weeklyTokensLow
-        ? ' - <span style="color: var(--vscode-disabledForeground)">W &lt; 5%</span>'
-        : '';
-      const summary = escapeMarkdown(
-        formatCompactRateSummary(status, now, {
-          includePrimaryCountdown: true,
-          includeSecondaryCountdown: true,
-          percentageMode: 'remaining'
-        })
-      );
+      const lowWeeklyBadge = weeklyTokensLow ? ' `W < 5%`' : '';
+      const summary = formatCompactRateSummary(status, now, {
+        includePrimaryCountdown: true,
+        includeSecondaryCountdown: true,
+        percentageMode: 'remaining'
+      })
+        .split(' | ')
+        .map((windowText) => escapeMarkdown(windowText))
+        .join('<br>');
       const estimateSuffix = status.isEstimatedRateLimitData ? ' - estimate' : '';
+      const otherWindowUsage = formatOtherWindowUsage(
+        getOtherWindowUsageEntries(profile.id, otherWindowProfileUsageByProfileId)
+      );
 
       tooltip.appendMarkdown(
-        `* ${activePrefix}${linkedName} - ${plan} - ${summary}${estimateSuffix}${email}${lowWeeklySuffix}\n`
+        `| ${activeBadge}${linkedName}${lowWeeklyBadge} | ${plan} | ${summary}${estimateSuffix} | ${otherWindowUsage} |\n`
       );
-    }
+    });
 
     tooltip.appendMarkdown('\n');
   }
@@ -76,7 +105,7 @@ function createProfileTooltip(activeProfile, profiles) {
   tooltip.appendMarkdown('\n');
   tooltip.appendMarkdown('---\n\n');
   tooltip.appendMarkdown(
-    '[Switch profile](command:codex-switch.profile.switch) • [Manage profiles](command:codex-switch.profile.manage) • [Send to Codex settings](command:codexTerminalRecorder.openSettings) • [Rate limit details](command:codex-ratelimit.showDetails) • [Refresh limits](command:codex-ratelimit.refreshStats)\n\n'
+    '[Switch profile](command:codex-switch.profile.switch) • [Manage profiles](command:codex-switch.profile.manage) • [Send to Codex settings](command:codexTerminalRecorder.openSettings)\n\n'
   );
   return tooltip;
 }

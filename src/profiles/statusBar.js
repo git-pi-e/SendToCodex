@@ -62,7 +62,7 @@ class ProfileStatusBarController {
     this.update(null, []);
   }
 
-  update(activeProfile, profiles) {
+  update(activeProfile, profiles, otherWindowProfileUsageByProfileId) {
     if (!areProfileFeaturesEnabled()) {
       this.statusBarItem.hide();
       return;
@@ -73,7 +73,11 @@ class ProfileStatusBarController {
       this.statusBarItem.text = '$(account) 5H n/a | W n/a';
       this.statusBarItem.command = 'codex-switch.profile.manage';
       this.statusBarItem.color = new vscode.ThemeColor('statusBarItem.foreground');
-      this.statusBarItem.tooltip = createProfileTooltip(null, allProfiles);
+      this.statusBarItem.tooltip = createProfileTooltip(
+        null,
+        allProfiles,
+        otherWindowProfileUsageByProfileId
+      );
       this.statusBarItem.show();
       return;
     }
@@ -94,7 +98,11 @@ class ProfileStatusBarController {
       status.cooldownActive,
       isProfileWeeklyTokensLow(activeProfile, now, { activeProfileId: activeProfile.id })
     );
-    this.statusBarItem.tooltip = createProfileTooltip(activeProfile, allProfiles);
+    this.statusBarItem.tooltip = createProfileTooltip(
+      activeProfile,
+      allProfiles,
+      otherWindowProfileUsageByProfileId
+    );
     this.statusBarItem.show();
   }
 

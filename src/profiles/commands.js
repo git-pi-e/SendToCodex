@@ -27,10 +27,17 @@ const {
   formatCompactRateSummary,
   formatPlanType,
   getProfileRateStatus,
+  getWindowRemainingPercent,
   isProfileWeeklyTokensLow,
   sortProfilesForDisplay
 } = require('./profileStatus');
 const { RateLimitDetailsPanel } = require('./webview');
+const {
+  getProfileQuickPickSectionLabel,
+  getProfileQuickPickSettings,
+  isProfileQuickPickSectionVisible,
+  sortProfileQuickPickItems
+} = require('./quickPickSettings');
 const {
   displayProfileEmail,
   displayProfileName
@@ -72,10 +79,114 @@ async function getProfileAuthState(profileManager, profileId) {
   };
 }
 
+function getProfileQuickPickSection(status, authState, weeklyTokensLow) {
+  if (authState.hasIssue) {
+    return 'needsAuth';
+  }
+  if (weeklyTokensLow) {
+    return 'weeklyLow';
+  }
+  if (status.cooldownActive) {
+    return 'coolingDown';
+  }
+  if (status.isEstimatedRateLimitData) {
+    return 'staleEstimate';
+  }
+  return 'ready';
+}
+
+function getProfileQuickPickIcon(isActive, authState, weeklyTokensLow, status) {
+  if (isActive) {
+    return '$(check)';
+  }
+  if (authState.hasIssue) {
+    return '$(warning)';
+  }
+  if (weeklyTokensLow) {
+    return '$(circle-slash)';
+  }
+  if (status.cooldownActive) {
+    return '$(watch)';
+  }
+  return '$(account)';
+}
+
+function getFutureTimestamp(value, now) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > now ? numeric : null;
+}
+
+function getEarliestFutureTimestamp(values, now) {
+  const futureValues = values
+    .map((value) => getFutureTimestamp(value, now))
+    .filter((value) => value != null)
+    .sort((left, right) => left - right);
+  return futureValues.length ? futureValues[0] : null;
+}
+
+function getLowestRemainingPercent(primaryRemainingPercent, weeklyRemainingPercent) {
+  const values = [primaryRemainingPercent, weeklyRemainingPercent]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return values.length ? Math.min(...values) : -1;
+}
+
+function getOtherWindowUsageEntries(profileId, otherWindowProfileUsageByProfileId) {
+  if (!profileId || !otherWindowProfileUsageByProfileId) {
+    return [];
+  }
+
+  if (typeof otherWindowProfileUsageByProfileId.get === 'function') {
+    return otherWindowProfileUsageByProfileId.get(profileId) || [];
+  }
+
+  return otherWindowProfileUsageByProfileId[profileId] || [];
+}
+
+function formatOtherWindowUsageDescription(entries) {
+  if (!entries || !entries.length) {
+    return '';
+  }
+
+  const labels = [...new Set(
+    entries
+      .map((entry) => String((entry && entry.workspaceLabel) || '').trim())
+      .filter(Boolean)
+  )];
+  const suffix = labels.length ? `: ${labels.slice(0, 2).join(', ')}` : '';
+  return `IN USE ELSEWHERE${suffix}`;
+}
+
+async function confirmSwitchToProfileUsedInOtherWindow(profile, profileManager) {
+  const usageByProfileId = profileManager.getOtherActiveWindowProfileUsageByProfileId();
+  const entries = getOtherWindowUsageEntries(profile && profile.id, usageByProfileId);
+  if (!entries.length) {
+    return true;
+  }
+
+  const profileName = displayProfileName(profile);
+  const labels = [...new Set(
+    entries
+      .map((entry) => String((entry && entry.workspaceLabel) || '').trim())
+      .filter(Boolean)
+  )];
+  const locationText = labels.length ? ` (${labels.join(', ')})` : '';
+  const switchLabel = 'Switch anyway';
+  const selection = await vscode.window.showWarningMessage(
+    `Codex profile "${profileName}" is already active in ${entries.length} other VS Code window(s)${locationText}.`,
+    { modal: true },
+    switchLabel
+  );
+  return selection === switchLabel;
+}
+
 async function buildProfileQuickPickItems(profiles, activeProfileId, profileManager) {
   const now = Date.now();
+  const quickPickSettings = getProfileQuickPickSettings();
+  const otherWindowProfileUsageByProfileId =
+    profileManager.getOtherActiveWindowProfileUsageByProfileId();
   const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now);
-  return Promise.all(sortedProfiles.map(async (profile) => {
+  return Promise.all(sortedProfiles.map(async (profile, index) => {
     const status = getProfileRateStatus(profile, now, { activeProfileId });
     const descriptionParts = [];
     const authState = await getProfileAuthState(profileManager, profile.id);
@@ -88,34 +199,74 @@ async function buildProfileQuickPickItems(profiles, activeProfileId, profileMana
     if (weeklyTokensLow) {
       descriptionParts.push('W < 5%');
     }
+    const otherWindowUsageEntries = getOtherWindowUsageEntries(
+      profile.id,
+      otherWindowProfileUsageByProfileId
+    );
+    const otherWindowUsageDescription =
+      formatOtherWindowUsageDescription(otherWindowUsageEntries);
+    if (otherWindowUsageDescription) {
+      descriptionParts.push(otherWindowUsageDescription);
+    }
     if (authState.description) {
       descriptionParts.push(authState.description);
     }
     descriptionParts.push(formatPlanType(profile.planType));
-    if (profile.email && profile.email !== 'Unknown') {
-      descriptionParts.push(displayProfileEmail(profile.email));
-    }
 
     const summary = formatCompactRateSummary(status, now, {
       includePrimaryCountdown: true,
       includeSecondaryCountdown: true,
-      percentageMode: 'remaining'
+      percentageMode: 'remaining',
+      roundLowWeeklyRemainingToZero: quickPickSettings.roundLowWeeklyRemainingToZero
     });
     const estimateSuffix = status.isEstimatedRateLimitData ? ' • estimate' : '';
+    const email = profile.email && profile.email !== 'Unknown'
+      ? displayProfileEmail(profile.email)
+      : null;
+    const group = profile.group ? `Group: ${profile.group}` : null;
+    if (authState.hasIssue) {
+      descriptionParts.push('Restore the matching auth.json for this account');
+    } else {
+      descriptionParts.push(`${summary}${estimateSuffix}`);
+    }
+    if (email) {
+      descriptionParts.push(email);
+    }
+    if (group) {
+      descriptionParts.push(group);
+    }
+    const primaryResetAt = getFutureTimestamp(status.primary && status.primary.resetAt, now);
+    const weeklyResetAt = getFutureTimestamp(status.secondary && status.secondary.resetAt, now);
+    const nextResetAt = getEarliestFutureTimestamp(
+      [status.cooldownUntil, primaryResetAt, weeklyResetAt],
+      now
+    );
+    const primaryRemainingPercent = getWindowRemainingPercent(status.primary, now);
+    const weeklyRemainingPercent = getWindowRemainingPercent(status.secondary, now);
 
     return {
-      label: displayProfileName(profile),
-      description: descriptionParts.length ? descriptionParts.join(' • ') : undefined,
-      detail: authState.hasIssue
-        ? `${isActive ? 'Currently selected • ' : ''}Restore the matching auth.json for this account`
-        : `${isActive ? 'Currently selected • ' : ''}${summary}${estimateSuffix}`,
+      label: `${getProfileQuickPickIcon(isActive, authState, weeklyTokensLow, status)} ${displayProfileName(profile)}`,
+      description: descriptionParts.length ? descriptionParts.join('   ') : undefined,
       profileId: profile.id,
       profileName: profile.name,
+      profileDisplayName: displayProfileName(profile),
+      planText: formatPlanType(profile.planType),
+      profileGroup: profile.group || '',
+      quickPickSortIndex: index,
+      primaryResetAt,
+      weeklyResetAt,
+      nextResetAt,
+      observedAt: status.observedAt || null,
+      primaryRemainingPercent,
+      weeklyRemainingPercent,
+      lowestRemainingPercent: getLowestRemainingPercent(primaryRemainingPercent, weeklyRemainingPercent),
       isActive,
       iconPath: weeklyTokensLow
         ? new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('disabledForeground'))
         : undefined,
       weeklyTokensLow,
+      otherWindowUsageCount: otherWindowUsageEntries.length,
+      quickPickSection: getProfileQuickPickSection(status, authState, weeklyTokensLow),
       alwaysShow: isActive
     };
   }));
@@ -411,10 +562,22 @@ function buildSendToCodexSettingsItem() {
 
 function buildManageProfilesItem() {
   return {
-    label: '$(settings-gear) More profile actions...',
-    detail: 'Open the full profile management menu.',
+    label: '$(settings-gear) Open accounts page...',
+    detail: 'Open the full Codex account management page.',
     command: 'codex-switch.profile.manage'
   };
+}
+
+function pushProfileSection(items, label, sectionItems) {
+  if (!sectionItems.length) {
+    return;
+  }
+
+  items.push({
+    label: `${label} (${sectionItems.length})`,
+    kind: vscode.QuickPickItemKind.Separator
+  });
+  items.push(...sectionItems);
 }
 
 function buildSwitchQuickPickItems(
@@ -425,6 +588,7 @@ function buildSwitchQuickPickItems(
   sendToCodexEnabled
 ) {
   const items = [];
+  const quickPickSettings = getProfileQuickPickSettings();
   const activeItems = profileItems.filter((item) => item.isActive);
   const inactiveItems = profileItems.filter((item) => !item.isActive);
 
@@ -437,11 +601,39 @@ function buildSwitchQuickPickItems(
   }
 
   if (inactiveItems.length > 0) {
-    items.push({
-      label: activeItems.length > 0 ? 'Other profiles' : 'Saved profiles',
-      kind: vscode.QuickPickItemKind.Separator
-    });
-    items.push(...inactiveItems);
+    const sectionOrder = quickPickSettings.sectionOrder;
+    const remainingItems = [...inactiveItems];
+    for (const sectionId of sectionOrder) {
+      const sectionItems = remainingItems.filter((item) => item.quickPickSection === sectionId);
+      if (isProfileQuickPickSectionVisible(quickPickSettings, sectionId)) {
+        pushProfileSection(
+          items,
+          getProfileQuickPickSectionLabel(sectionId),
+          sortProfileQuickPickItems(
+            sectionItems,
+            quickPickSettings.profileSort,
+            quickPickSettings.secondaryProfileSort
+          )
+        );
+      }
+      for (const sectionItem of sectionItems) {
+        const index = remainingItems.indexOf(sectionItem);
+        if (index !== -1) {
+          remainingItems.splice(index, 1);
+        }
+      }
+    }
+    if (isProfileQuickPickSectionVisible(quickPickSettings, 'otherProfiles')) {
+      pushProfileSection(
+        items,
+        getProfileQuickPickSectionLabel('otherProfiles'),
+        sortProfileQuickPickItems(
+          remainingItems,
+          quickPickSettings.profileSort,
+          quickPickSettings.secondaryProfileSort
+        )
+      );
+    }
   }
 
   if (addCurrentProfileItem) {
@@ -510,7 +702,8 @@ function showProfileSwitchQuickPick(
     quickPick.title = 'Codex Multitool';
     quickPick.placeholder = 'Switch profile';
     quickPick.matchOnDescription = true;
-    quickPick.matchOnDetail = true;
+    quickPick.matchOnDetail = false;
+    quickPick.keepScrollPosition = true;
     rebuildItems();
 
     quickPick.onDidAccept(async () => {
@@ -697,6 +890,12 @@ function registerProfileCommands(
     const previousProfileId = await profileManager.getActiveProfileId();
     const changedProfile = previousProfileId !== profileId;
     const shouldReloadWindow = reloadWindowOnSwitch && (changedProfile || forceReloadWindow);
+    if (profileId && changedProfile) {
+      const targetProfile = await profileManager.getProfile(profileId);
+      if (targetProfile && !(await confirmSwitchToProfileUsedInOtherWindow(targetProfile, profileManager))) {
+        return null;
+      }
+    }
     if (profileId && (changedProfile || forceReloadWindow)) {
       markWindowAuthChangeExpected({ profileId });
     }
@@ -1191,7 +1390,18 @@ function registerProfileCommands(
       }
 
       const switched = await setActiveProfileAndRefresh(profileId);
+      if (switched == null) {
+        return;
+      }
       if (!switched) {
+        const profile = await profileManager.getProfile(profileId);
+        const message = profile
+          ? `Failed to activate Codex profile "${displayProfileName(profile)}". Stored tokens may be missing or invalid.`
+          : 'Failed to activate Codex profile because it no longer exists.';
+        profileManager.logger &&
+          profileManager.logger.error &&
+          profileManager.logger.error(message, { profileId });
+        void vscode.window.showErrorMessage(message);
         return;
       }
     }
@@ -1267,19 +1477,29 @@ function registerProfileCommands(
 
   const reauthenticateProfileCommand = vscode.commands.registerCommand(
     'codex-switch.profile.reauthenticate',
-    async () => {
+    async (profileId) => {
       if (!(await ensureProfileFeaturesEnabled())) {
         return;
       }
 
       const activeProfileId = await profileManager.getActiveProfileId();
-      if (!activeProfileId) {
+      const targetProfileId = profileId || activeProfileId;
+      if (!targetProfileId) {
         await startIsolatedCodexCliLoginFlow();
         return;
       }
 
-      const activeProfile = await profileManager.getProfile(activeProfileId);
-      const profileName = activeProfile ? displayProfileName(activeProfile) : activeProfileId;
+      const targetProfile = await profileManager.getProfile(targetProfileId);
+      if (!targetProfile) {
+        const message = 'The selected Codex profile no longer exists.';
+        profileManager.logger &&
+          profileManager.logger.error &&
+          profileManager.logger.error(message, { profileId: targetProfileId });
+        void vscode.window.showErrorMessage(message);
+        return;
+      }
+
+      const profileName = displayProfileName(targetProfile);
       const continueLabel = 'Log out and sign in';
       const selection = await vscode.window.showWarningMessage(
         `Re-authenticate profile "${profileName}"? This runs "${getLogoutCommandText()}" before "${getLoginCommandText()}" so revoked refresh tokens are cleared.`,
@@ -1290,7 +1510,7 @@ function registerProfileCommands(
         return;
       }
 
-      await startCodexCliLoginFlow({ targetProfileId: activeProfileId });
+      await startCodexCliLoginFlow({ targetProfileId });
     }
   );
 
@@ -1693,108 +1913,7 @@ function registerProfileCommands(
         return;
       }
 
-      const authPath = getDefaultCodexAuthPath(profileManager.logger);
-      const profiles = await profileManager.listProfiles();
-      const hasProfiles = profiles.length > 0;
-      const addCurrentProfileItem = await buildAddCurrentProfileItem(profileManager);
-      const disableSendToCodexItem = buildSendToCodexToggleItem(getSendToCodexEnabled());
-
-      const action = await vscode.window.showQuickPick(
-        [
-          {
-            label: 'Login via Codex CLI (isolated)...',
-            detail: 'Sign in with a temporary CODEX_HOME, then save the new auth.json as a profile.',
-            command: 'codex-switch.profile.login'
-          },
-          ...(hasProfiles
-            ? [
-                {
-                  label: 'Re-authenticate active profile...',
-                  detail: 'Clear revoked refresh tokens with codex logout, then sign in again.',
-                  command: 'codex-switch.profile.reauthenticate'
-                }
-              ]
-            : []),
-          ...(hasProfiles
-            ? [
-                {
-                  label: 'Switch profile',
-                  command: 'codex-switch.profile.switch'
-                }
-              ]
-            : []),
-          {
-            label: 'Show rate limit details',
-            command: 'codex-ratelimit.showDetails'
-          },
-          {
-            label: 'Profile doctor',
-            detail: 'Open a diagnostics report for active auth, profiles, backups, and rate-limit source.',
-            command: 'codex-switch.profile.doctor'
-          },
-          {
-            label: 'Refresh rate limits',
-            command: 'codex-ratelimit.refreshStats'
-          },
-          {
-            label: 'Post-switch chat restore strategy...',
-            detail: getPostSwitchRestoreStrategyOption(getPostSwitchRestoreStrategy()).detail,
-            command: 'codex-switch.profile.restoreStrategy'
-          },
-          disableSendToCodexItem,
-          ...(addCurrentProfileItem
-            ? [
-                {
-                  label: addCurrentProfileItem.label,
-                  description: addCurrentProfileItem.description || authPath,
-                  detail: addCurrentProfileItem.detail,
-                  command: addCurrentProfileItem.command
-                }
-              ]
-            : []),
-          {
-            label: 'Import from file...',
-            command: 'codex-switch.profile.addFromFile'
-          },
-          {
-            label: 'Restore auth.json backup...',
-            command: 'codex-switch.profile.restoreAuthBackup'
-          },
-          {
-            label: 'Export profiles...',
-            command: 'codex-switch.profile.exportSettings'
-          },
-          {
-            label: 'Import profiles...',
-            command: 'codex-switch.profile.importSettings'
-          },
-          ...(hasProfiles
-            ? [
-                {
-                  label: 'Rename profile',
-                  command: 'codex-switch.profile.rename'
-                },
-                {
-                  label: 'Delete profile',
-                  command: 'codex-switch.profile.delete'
-                }
-              ]
-            : [])
-        ],
-        { placeHolder: 'Manage profiles' }
-      );
-
-      if (!action) {
-        return;
-      }
-
-      if (action.sendToggle) {
-        await setSendToCodexEnabled(!getSendToCodexEnabled());
-        await vscode.commands.executeCommand('codex-switch.profile.manage');
-        return;
-      }
-
-      await vscode.commands.executeCommand(action.command);
+      RateLimitDetailsPanel.createOrShow(context.extensionUri, profileManager, rateLimitMonitor);
     }
   );
 

@@ -272,13 +272,13 @@ function getRawWindowRemainingPercent(windowState, now = Date.now()) {
   return Math.max(0, Math.min(100, 100 - windowState.usedPercent));
 }
 
-function roundRemainingPercent(remainingPercent) {
+function roundRemainingPercent(remainingPercent, options = {}) {
   if (remainingPercent == null) {
     return -1;
   }
 
   const normalized = Math.max(0, Math.min(100, normalizeNumber(remainingPercent, 0)));
-  if (normalized < LOW_REMAINING_PERCENT_THRESHOLD) {
+  if (options.roundLowRemainingToZero === true && normalized < LOW_REMAINING_PERCENT_THRESHOLD) {
     return 0;
   }
 
@@ -289,9 +289,9 @@ function roundRemainingPercent(remainingPercent) {
   return Math.round(normalized);
 }
 
-function getWindowRemainingPercent(windowState, now = Date.now()) {
+function getWindowRemainingPercent(windowState, now = Date.now(), options = {}) {
   const remainingPercent = getRawWindowRemainingPercent(windowState, now);
-  return roundRemainingPercent(remainingPercent);
+  return roundRemainingPercent(remainingPercent, options);
 }
 
 function isWindowLowRemaining(windowState, now = Date.now()) {
@@ -450,7 +450,9 @@ function formatCompactWindow(windowState, label, now = Date.now(), options = {})
   const isReady = !windowState.resetAt || windowState.resetAt <= now;
   const percentValue =
     percentageMode === 'remaining'
-      ? getWindowRemainingPercent(windowState, now)
+      ? getWindowRemainingPercent(windowState, now, {
+          roundLowRemainingToZero: options.roundLowRemainingToZero === true
+        })
       : isReady
         ? 0
         : Math.round(windowState.usedPercent);
@@ -473,7 +475,8 @@ function formatCompactRateSummary(status, now = Date.now(), options = {}) {
 
   const secondaryText = formatCompactWindow(status.secondary, 'W', now, {
     includeCountdown: options.includeSecondaryCountdown !== false,
-    percentageMode: options.percentageMode
+    percentageMode: options.percentageMode,
+    roundLowRemainingToZero: options.roundLowWeeklyRemainingToZero === true
   });
 
   return `${primaryText} | ${secondaryText}`;
