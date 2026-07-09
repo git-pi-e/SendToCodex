@@ -17,6 +17,7 @@ function createMockVscode(options = {}) {
   const commandCalls = [];
   const warningMessages = [];
   const errorMessages = [];
+  const quickPickCalls = [];
   const externalUris = [];
   const closedTabs = [];
   const commandHandlers = new Map(Object.entries(options.commandHandlers || {}));
@@ -25,6 +26,11 @@ function createMockVscode(options = {}) {
 
   const mock = {
     version: '1.105.0',
+    ConfigurationTarget: {
+      Global: 1,
+      Workspace: 2,
+      WorkspaceFolder: 3
+    },
     ViewColumn: {
       Active: -1,
       One: 1,
@@ -76,6 +82,10 @@ function createMockVscode(options = {}) {
       showErrorMessage: async (message) => {
         errorMessages.push(message);
         return undefined;
+      },
+      showQuickPick: async (items, quickPickOptions) => {
+        quickPickCalls.push({ items, options: quickPickOptions });
+        return undefined;
       }
     }
   };
@@ -87,6 +97,7 @@ function createMockVscode(options = {}) {
     commandCalls,
     warningMessages,
     errorMessages,
+    quickPickCalls,
     externalUris,
     closedTabs,
     setCommands(nextCommands) {

@@ -64,6 +64,13 @@ function normalizeProfileGroup(value) {
   return asOptionalString(value) || 'Ungrouped';
 }
 
+function normalizeWindowUsageWorkspaceLabel(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s*\(Workspace\)\s*$/i, '')
+    .trim() || 'VS Code window';
+}
+
 function clampPercent(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -212,7 +219,7 @@ function normalizeActiveWindowUsageFile(rawValue, now = Date.now()) {
       return {
         windowId: asOptionalString(source.windowId),
         profileId: asOptionalString(source.profileId),
-        workspaceLabel: asOptionalString(source.workspaceLabel) || 'VS Code window',
+        workspaceLabel: normalizeWindowUsageWorkspaceLabel(source.workspaceLabel),
         pid: Number.isFinite(Number(source.pid)) ? Number(source.pid) : null,
         updatedAt
       };
@@ -515,12 +522,12 @@ class ProfileManager {
 
   getWindowUsageWorkspaceLabel() {
     if (vscode.workspace.name) {
-      return vscode.workspace.name;
+      return normalizeWindowUsageWorkspaceLabel(vscode.workspace.name);
     }
 
     const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
     if (folder && folder.uri && folder.uri.fsPath) {
-      return path.basename(folder.uri.fsPath) || folder.uri.fsPath;
+      return normalizeWindowUsageWorkspaceLabel(path.basename(folder.uri.fsPath) || folder.uri.fsPath);
     }
 
     return 'VS Code window';
@@ -1755,15 +1762,15 @@ class ProfileManager {
     activeWindowUsageWatcher.onDidDelete(() => fire('windowUsage'));
     disposables.push(activeWindowUsageWatcher);
 
-    if (this.isRemoteFilesMode()) {
-      const profilesWatcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(getSharedStoreRoot()), PROFILES_FILENAME)
-      );
-      profilesWatcher.onDidCreate(() => fire('profiles'));
-      profilesWatcher.onDidChange(() => fire('profiles'));
-      profilesWatcher.onDidDelete(() => fire('profiles'));
-      disposables.push(profilesWatcher);
+    const profilesWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(this.getStorageDir()), PROFILES_FILENAME)
+    );
+    profilesWatcher.onDidCreate(() => fire('profiles'));
+    profilesWatcher.onDidChange(() => fire('profiles'));
+    profilesWatcher.onDidDelete(() => fire('profiles'));
+    disposables.push(profilesWatcher);
 
+    if (this.isRemoteFilesMode()) {
       const activeWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(
           vscode.Uri.file(getSharedStoreRoot()),

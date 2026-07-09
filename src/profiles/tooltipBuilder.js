@@ -1,17 +1,51 @@
 'use strict';
 
 const vscode = require('vscode');
+const path = require('path');
 const {
   formatCompactRateSummary,
   getProfileRateStatus,
   formatPlanType,
+  getWindowRemainingPercent,
   isProfileWeeklyTokensLow,
   sortProfilesForDisplay
 } = require('./profileStatus');
+const {
+  formatLowRemainingPercentThreshold,
+  getProfileQuickPickSettings
+} = require('./quickPickSettings');
 const { displayProfileName } = require('./privacy');
 
 function escapeMarkdown(text) {
   return String(text || '').replace(/\\/g, '\\\\').replace(/([`*_{}[\]()#+\-.!|])/g, '\\$1');
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeHtmlAttribute(text) {
+  return escapeHtml(text);
+}
+
+const DIM_TOOLTIP_COLOR = '#858585';
+
+function dimHtml(text) {
+  return `<font color="${DIM_TOOLTIP_COLOR}">${text}</font>`;
+}
+
+function dimWindowUsageHtml(windowUsage) {
+  const match = String(windowUsage || '').match(/^\$\(window\)(.*)$/);
+  if (!match) {
+    return dimHtml(windowUsage);
+  }
+
+  return `$(window)${match[1] ? ` ${dimHtml(match[1].trim())}` : ''}`;
 }
 
 function buildCommandUri(command, args) {
@@ -30,21 +64,52 @@ function getOtherWindowUsageEntries(profileId, otherWindowProfileUsageByProfileI
   return otherWindowProfileUsageByProfileId[profileId] || [];
 }
 
-function formatOtherWindowUsage(entries) {
-  if (!entries || !entries.length) {
+function formatWindowUsageLabel(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s*\(Workspace\)\s*$/i, '')
+    .trim();
+}
+
+function getCurrentWindowUsageLabel() {
+  if (vscode.workspace.name) {
+    return formatWindowUsageLabel(vscode.workspace.name) || 'This window';
+  }
+
+  const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+  if (folder && folder.uri && folder.uri.fsPath) {
+    return formatWindowUsageLabel(path.basename(folder.uri.fsPath) || folder.uri.fsPath) ||
+      'This window';
+  }
+
+  return 'This window';
+}
+
+function formatWindowUsage(entries, options = {}) {
+  const includeCurrentWindow = options.includeCurrentWindow === true;
+  if ((!entries || !entries.length) && !includeCurrentWindow) {
     return '';
   }
 
+  const currentWindowLabel = includeCurrentWindow
+    ? formatWindowUsageLabel(options.currentWindowLabel) || getCurrentWindowUsageLabel()
+    : null;
   const labels = [...new Set(
-    entries
-      .map((entry) => String((entry && entry.workspaceLabel) || '').trim())
+    (currentWindowLabel ? [{ workspaceLabel: currentWindowLabel }] : [])
+      .concat(entries || [])
+      .map((entry) => formatWindowUsageLabel(entry && entry.workspaceLabel))
       .filter(Boolean)
   )];
   const visibleLabels = labels.slice(0, 2).map(escapeMarkdown);
   const hiddenCount = Math.max(0, labels.length - visibleLabels.length);
   const suffix = hiddenCount > 0 ? `, +${hiddenCount}` : '';
-  const windowText = entries.length === 1 ? '1 other window' : `${entries.length} other windows`;
-  return `${escapeMarkdown(windowText)}${visibleLabels.length ? `: ${visibleLabels.join(', ')}${suffix}` : ''}`;
+  return `$(window)${visibleLabels.length ? ` ${visibleLabels.join(', ')}${suffix}` : ''}`;
+}
+
+function hasZeroRemainingLimit(status, now) {
+  return [status && status.primary, status && status.secondary].some((windowState) => {
+    return getWindowRemainingPercent(windowState, now) === 0;
+  });
 }
 
 function createProfileTooltip(activeProfile, profiles, otherWindowProfileUsageByProfileId) {
@@ -65,36 +130,57 @@ function createProfileTooltip(activeProfile, profiles, otherWindowProfileUsageBy
   } else {
     const activeId = activeProfile ? activeProfile.id : undefined;
     const now = Date.now();
-    const sortedProfiles = sortProfilesForDisplay(profiles, activeId, now);
+    const quickPickSettings = getProfileQuickPickSettings();
+    const lowWeeklyOptions = {
+      activeProfileId: activeId,
+      lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
+    };
+    const lowWeeklyThresholdText = formatLowRemainingPercentThreshold(
+      quickPickSettings.lowWeeklyRemainingZeroThreshold
+    );
+    const sortedProfiles = sortProfilesForDisplay(profiles, activeId, now, lowWeeklyOptions);
 
-    tooltip.appendMarkdown('| Account | Plan | Limits | Other windows |\n');
+    tooltip.appendMarkdown('| Account | Plan | Limits | Windows |\n');
     tooltip.appendMarkdown('| --- | --- | --- | --- |\n');
 
     sortedProfiles.forEach((profile) => {
       const status = getProfileRateStatus(profile, now, { activeProfileId: activeId });
       const switchUri = buildCommandUri('codex-switch.profile.activate', [profile.id]);
       const plan = escapeMarkdown(formatPlanType(profile.planType));
-      const linkedName = `[${escapeMarkdown(displayProfileName(profile))}](${switchUri})`;
-      const activeBadge = activeId === profile.id ? '**ACTIVE** ' : '';
-      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, {
-        activeProfileId: activeId
-      });
-      const lowWeeklyBadge = weeklyTokensLow ? ' `W < 5%`' : '';
+      const muted = hasZeroRemainingLimit(status, now);
+      const profileName = displayProfileName(profile);
+      const linkedName = muted
+        ? `<a href="${escapeHtmlAttribute(switchUri)}">${dimHtml(escapeHtml(profileName))}</a>`
+        : `[${escapeMarkdown(profileName)}](${switchUri})`;
+      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, lowWeeklyOptions);
+      const lowWeeklyBadge = weeklyTokensLow
+        ? muted
+          ? ` ${dimHtml(`W &lt; ${lowWeeklyThresholdText}%`)}`
+          : ` \`W < ${lowWeeklyThresholdText}%\``
+        : '';
       const summary = formatCompactRateSummary(status, now, {
         includePrimaryCountdown: true,
         includeSecondaryCountdown: true,
-        percentageMode: 'remaining'
+        percentageMode: 'remaining',
+        roundLowWeeklyRemainingToZero: quickPickSettings.roundLowWeeklyRemainingToZero,
+        lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
       })
         .split(' | ')
         .map((windowText) => escapeMarkdown(windowText))
         .join('<br>');
       const estimateSuffix = status.isEstimatedRateLimitData ? ' - estimate' : '';
-      const otherWindowUsage = formatOtherWindowUsage(
-        getOtherWindowUsageEntries(profile.id, otherWindowProfileUsageByProfileId)
+      const windowUsage = formatWindowUsage(
+        getOtherWindowUsageEntries(profile.id, otherWindowProfileUsageByProfileId),
+        {
+          includeCurrentWindow: activeId === profile.id
+        }
       );
+      const planCell = muted ? dimHtml(plan) : plan;
+      const limitsCell = muted ? dimHtml(`${summary}${estimateSuffix}`) : `${summary}${estimateSuffix}`;
+      const windowsCell = muted && windowUsage ? dimWindowUsageHtml(windowUsage) : windowUsage;
 
       tooltip.appendMarkdown(
-        `| ${activeBadge}${linkedName}${lowWeeklyBadge} | ${plan} | ${summary}${estimateSuffix} | ${otherWindowUsage} |\n`
+        `| ${linkedName}${lowWeeklyBadge} | ${planCell} | ${limitsCell} | ${windowsCell} |\n`
       );
     });
 

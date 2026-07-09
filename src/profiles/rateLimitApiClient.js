@@ -3,6 +3,7 @@
 const USAGE_API_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const REQUEST_TIMEOUT_MS = 10000;
 const WINDOW_SECONDS_TO_MINUTES = 60;
+const ACCESS_TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 function createEmptyTokenUsage() {
   return {
@@ -25,6 +26,25 @@ function parseJwtPayload(token) {
   } catch {
     return {};
   }
+}
+
+function getJwtExpirationMs(token) {
+  const payload = parseJwtPayload(token);
+  const exp = Number(payload && payload.exp);
+  if (!Number.isFinite(exp) || exp <= 0) {
+    return null;
+  }
+
+  return Math.round(exp * 1000);
+}
+
+function isAccessTokenExpiringSoon(authData, nowMs = Date.now(), skewMs = ACCESS_TOKEN_REFRESH_SKEW_MS) {
+  const expiresAt = getJwtExpirationMs(authData && authData.accessToken);
+  if (!expiresAt) {
+    return false;
+  }
+
+  return expiresAt <= nowMs + Math.max(0, Number(skewMs) || 0);
 }
 
 function asNumber(value) {
@@ -158,12 +178,14 @@ async function requestUsagePayload(authData) {
     if (!response.ok) {
       return {
         found: false,
+        status: response.status,
         error: `Codex usage API returned HTTP ${response.status}`
       };
     }
 
     return {
       found: true,
+      status: response.status,
       payload: await response.json()
     };
   } catch (error) {
@@ -211,6 +233,9 @@ async function getUsageApiRateLimitData(authData, logger) {
 }
 
 module.exports = {
+  USAGE_API_URL,
   getUsageApiRateLimitData,
+  getJwtExpirationMs,
+  isAccessTokenExpiringSoon,
   normalizeUsageApiPayload
 };

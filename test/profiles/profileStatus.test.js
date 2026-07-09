@@ -10,6 +10,7 @@ const {
 } = require('../../src/profiles/profileStatus');
 
 const USAGE_API_SOURCE = 'https://chatgpt.com/backend-api/wham/usage';
+const APP_SERVER_SOURCE = 'codex-app-server://account/rateLimits/read';
 
 function createProfile(rateLimitState, overrides = {}) {
   return {
@@ -56,6 +57,34 @@ test('rate-limit display uses fresh Usage API observations', () => {
     }),
     '5H 60% | W 75%'
   );
+});
+
+test('rate-limit display treats Codex app-server observations as fresh exact data', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile({
+      observedAt: now - 10_000,
+      sourceFile: APP_SERVER_SOURCE,
+      primary: {
+        usedPercent: 35,
+        resetAt: now + 2 * 60 * 60 * 1000,
+        windowMinutes: 300
+      },
+      secondary: {
+        usedPercent: 20,
+        resetAt: now + 3 * 24 * 60 * 60 * 1000,
+        windowMinutes: 10_080
+      }
+    }),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(status.hasFreshUsageApiData, true);
+  assert.equal(status.isEstimatedRateLimitData, false);
+  assert.equal(status.sourceType, 'codexAppServer');
+  assert.equal(getWindowRemainingPercent(status.primary, now), 65);
+  assert.equal(getWindowRemainingPercent(status.secondary, now), 80);
 });
 
 test('compact rate summary shows weekly remaining limit and reset countdown', () => {
@@ -389,7 +418,7 @@ test('weekly zero remaining forces primary remaining to zero', () => {
   assert.equal(getWindowRemainingPercent(status.primary, now), 0);
 });
 
-test('low nonzero weekly remaining is not displayed as zero by default', () => {
+test('weekly remaining above one percent is not displayed as zero by default', () => {
   const now = Date.parse('2026-05-20T10:00:00.000Z');
   const status = getProfileRateStatus(
     createProfile({
@@ -413,7 +442,7 @@ test('low nonzero weekly remaining is not displayed as zero by default', () => {
   assert.equal(getWindowRemainingPercent(status.secondary, now), 4);
   assert.equal(
     getWindowRemainingPercent(status.secondary, now, { roundLowRemainingToZero: true }),
-    0
+    4
   );
   assert.match(
     formatCompactRateSummary(status, now, {
@@ -422,6 +451,68 @@ test('low nonzero weekly remaining is not displayed as zero by default', () => {
       percentageMode: 'remaining'
     }),
     /W 4%/
+  );
+  assert.match(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining',
+      roundLowWeeklyRemainingToZero: true
+    }),
+    /W 4%/
+  );
+  assert.equal(
+    getWindowRemainingPercent(status.secondary, now, {
+      roundLowRemainingToZero: true,
+      lowRemainingPercentThreshold: 5
+    }),
+    0
+  );
+  assert.match(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining',
+      roundLowWeeklyRemainingToZero: true,
+      lowRemainingPercentThreshold: 5
+    }),
+    /W 0%/
+  );
+});
+
+test('weekly remaining below one percent can be displayed as zero', () => {
+  const now = Date.parse('2026-05-20T10:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile({
+      observedAt: now - 10_000,
+      sourceFile: USAGE_API_SOURCE,
+      primary: {
+        usedPercent: 5,
+        resetAt: now + 60 * 60 * 1000,
+        windowMinutes: 300
+      },
+      secondary: {
+        usedPercent: 99.4,
+        resetAt: now + 24 * 60 * 60 * 1000,
+        windowMinutes: 10_080
+      }
+    }),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(getWindowRemainingPercent(status.secondary, now), 1);
+  assert.equal(
+    getWindowRemainingPercent(status.secondary, now, { roundLowRemainingToZero: true }),
+    0
+  );
+  assert.match(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: true,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining'
+    }),
+    /W 1%/
   );
   assert.match(
     formatCompactRateSummary(status, now, {

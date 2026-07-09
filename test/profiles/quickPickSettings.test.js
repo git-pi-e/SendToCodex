@@ -5,12 +5,14 @@ const assert = require('node:assert/strict');
 
 const { createMockVscode, installMockVscode } = require('../helpers/mockVscode');
 
-function loadQuickPickSettings() {
+function loadQuickPickSettings(values = {}) {
   const mock = createMockVscode({
     overrides: {
       workspace: {
         getConfiguration: () => ({
-          get: (_key, fallback) => fallback
+          get: (key, fallback) => Object.prototype.hasOwnProperty.call(values, key)
+            ? values[key]
+            : fallback
         })
       }
     }
@@ -106,4 +108,28 @@ test('account switcher settings default to weekly reset as the secondary sort', 
   const { getProfileQuickPickSettings } = loadQuickPickSettings();
 
   assert.equal(getProfileQuickPickSettings().secondaryProfileSort, 'weeklyResetSoon');
+});
+
+test('account switcher settings default weekly zero threshold to one percent', () => {
+  const {
+    formatLowRemainingPercentThreshold,
+    getProfileQuickPickSettings
+  } = loadQuickPickSettings();
+  const settings = getProfileQuickPickSettings();
+
+  assert.equal(settings.lowWeeklyRemainingZeroThreshold, 1);
+  assert.equal(formatLowRemainingPercentThreshold(settings.lowWeeklyRemainingZeroThreshold), '1');
+});
+
+test('account switcher settings read custom weekly zero threshold', () => {
+  const {
+    formatLowRemainingPercentThreshold,
+    getProfileQuickPickSettings
+  } = loadQuickPickSettings({
+    'profileQuickPick.lowWeeklyRemainingZeroThreshold': 2.5
+  });
+  const settings = getProfileQuickPickSettings();
+
+  assert.equal(settings.lowWeeklyRemainingZeroThreshold, 2.5);
+  assert.equal(formatLowRemainingPercentThreshold(settings.lowWeeklyRemainingZeroThreshold), '2.5');
 });

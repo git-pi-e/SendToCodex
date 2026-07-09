@@ -8,6 +8,7 @@ const {
   getProfileRateStatus,
   isProfileWeeklyTokensLow
 } = require('./profileStatus');
+const { getProfileQuickPickSettings } = require('./quickPickSettings');
 const { displayProfileName } = require('./privacy');
 
 function getStatusBarColor(percentage, cooldownActive, weeklyTokensLow = false) {
@@ -83,20 +84,27 @@ class ProfileStatusBarController {
     }
 
     const now = Date.now();
+    const quickPickSettings = getProfileQuickPickSettings();
+    const lowWeeklyOptions = {
+      activeProfileId: activeProfile.id,
+      lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
+    };
     const status = getProfileRateStatus(activeProfile, now, {
       activeProfileId: activeProfile.id
     });
     this.statusBarItem.text = `$(account) ${formatStatusBarProfileName(activeProfile)}: ${formatCompactRateSummary(status, now, {
       includePrimaryCountdown: true,
       includeSecondaryCountdown: false,
-      percentageMode: 'remaining'
+      percentageMode: 'remaining',
+      roundLowWeeklyRemainingToZero: quickPickSettings.roundLowWeeklyRemainingToZero,
+      lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
     })}`;
     this.statusBarItem.command =
       allProfiles.length === 0 ? 'codex-switch.profile.manage' : 'codex-switch.profile.switch';
     this.statusBarItem.color = getStatusBarColor(
       status.maxUsedPercent,
       status.cooldownActive,
-      isProfileWeeklyTokensLow(activeProfile, now, { activeProfileId: activeProfile.id })
+      isProfileWeeklyTokensLow(activeProfile, now, lowWeeklyOptions)
     );
     this.statusBarItem.tooltip = createProfileTooltip(
       activeProfile,

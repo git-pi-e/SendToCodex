@@ -1,6 +1,10 @@
 'use strict';
 
 const vscode = require('vscode');
+const {
+  DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD,
+  normalizeLowRemainingPercentThreshold
+} = require('./profileStatus');
 
 const PROFILE_QUICK_PICK_SECTIONS = [
   { id: 'needsAuth', label: 'Needs auth' },
@@ -118,6 +122,15 @@ function normalizeSecondaryProfileSort(value) {
     : DEFAULT_PROFILE_QUICK_PICK_SECONDARY_SORT;
 }
 
+function formatLowRemainingPercentThreshold(value) {
+  const normalized = normalizeLowRemainingPercentThreshold(value);
+  if (Number.isInteger(normalized)) {
+    return String(normalized);
+  }
+
+  return String(normalized).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+}
+
 function getProfileQuickPickSectionLabel(sectionId) {
   const section = PROFILE_QUICK_PICK_SECTIONS.find((candidate) => candidate.id === sectionId);
   return section ? section.label : 'Other profiles';
@@ -143,6 +156,12 @@ function getProfileQuickPickSettings() {
     ),
     roundLowWeeklyRemainingToZero: Boolean(
       config.get('profileQuickPick.roundLowWeeklyRemainingToZero', false)
+    ),
+    lowWeeklyRemainingZeroThreshold: normalizeLowRemainingPercentThreshold(
+      config.get(
+        'profileQuickPick.lowWeeklyRemainingZeroThreshold',
+        DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD
+      )
     )
   };
 }
@@ -328,6 +347,7 @@ module.exports = {
   DEFAULT_PROFILE_QUICK_PICK_SECTION_ORDER,
   DEFAULT_PROFILE_QUICK_PICK_SECONDARY_SORT,
   DEFAULT_PROFILE_QUICK_PICK_SORT,
+  formatLowRemainingPercentThreshold,
   PROFILE_QUICK_PICK_SECTIONS,
   PROFILE_QUICK_PICK_SECONDARY_SORT_OPTIONS,
   PROFILE_QUICK_PICK_SORT_OPTIONS,

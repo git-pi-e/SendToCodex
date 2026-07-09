@@ -55,6 +55,25 @@ test('profile tooltip keeps weekly limit and reset countdown inside the limits t
               windowMinutes: 10_080
             }
           }
+        },
+        {
+          id: 'profile-2',
+          name: 'Zero Profile',
+          planType: 'plus',
+          rateLimitState: {
+            observedAt: now,
+            sourceFile: USAGE_API_SOURCE,
+            primary: {
+              usedPercent: 100,
+              resetAt: now + 2 * 60 * 60 * 1000,
+              windowMinutes: 300
+            },
+            secondary: {
+              usedPercent: 100,
+              resetAt: now + 2 * 24 * 60 * 60 * 1000,
+              windowMinutes: 10_080
+            }
+          }
         }
       ],
       new Map([
@@ -64,7 +83,7 @@ test('profile tooltip keeps weekly limit and reset countdown inside the limits t
             {
               windowId: 'other-window',
               profileId: 'profile-1',
-              workspaceLabel: 'Other Workspace',
+              workspaceLabel: 'Other Workspace (Workspace)',
               updatedAt: now
             }
           ]
@@ -74,7 +93,19 @@ test('profile tooltip keeps weekly limit and reset countdown inside the limits t
 
     assert.match(tooltip.value, /5H 60% 1h<br>W 75% 1d/);
     assert.doesNotMatch(tooltip.value, /\\\| W/);
-    assert.match(tooltip.value, /1 other window: Other Workspace/);
+    assert.match(tooltip.value, /\| Account \| Plan \| Limits \| Windows \|/);
+    assert.match(tooltip.value, /\$\(window\) This window, Other Workspace/);
+    assert.match(
+      tooltip.value,
+      /<a href="command:codex-switch\.profile\.activate\?%5B%22profile-2%22%5D"><font color="#858585">Zero Profile<\/font><\/a>/
+    );
+    assert.match(
+      tooltip.value,
+      /<font color="#858585">5H 0% 2d<br>W 0% 2d<\/font>/
+    );
+    assert.doesNotMatch(tooltip.value, /ACTIVE/);
+    assert.doesNotMatch(tooltip.value, /1 other window:/);
+    assert.doesNotMatch(tooltip.value, /\(Workspace\)/);
   } finally {
     restore();
   }

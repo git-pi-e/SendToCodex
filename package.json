@@ -2,7 +2,7 @@
   "name": "codex-terminal-recorder",
   "displayName": "Codex Multitool",
   "description": "Three-in-one VS Code extension for Send to Codex, Codex account switching, and per-profile rate-limit tracking.",
-  "version": "0.0.48",
+  "version": "0.0.57",
   "publisher": "screph",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -410,7 +410,7 @@
               "auto"
             ],
             "default": "ask",
-            "description": "Choose what Codex Multitool does when the active profile is low on remaining 5H or weekly usage and another fresh profile is available.",
+            "description": "Choose what Codex Multitool does when the active profile is low on remaining 5H usage and another fresh profile is available.",
             "enumDescriptions": [
               "Do not suggest switching profiles.",
               "Ask before switching to a profile with fresher usage.",
@@ -554,7 +554,14 @@
           "codexSwitch.profileQuickPick.roundLowWeeklyRemainingToZero": {
             "type": "boolean",
             "default": false,
-            "description": "Display weekly remaining usage below 5 percent as 0 percent in the account switcher popup."
+            "description": "Display weekly remaining usage below the configured threshold as 0 percent in the account switcher popup."
+          },
+          "codexSwitch.profileQuickPick.lowWeeklyRemainingZeroThreshold": {
+            "type": "number",
+            "default": 1,
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Weekly remaining usage percentage below which the account switcher displays the weekly limit as 0 percent when low-weekly rounding is enabled."
           }
         }
       },

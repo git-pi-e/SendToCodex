@@ -7,6 +7,7 @@ const {
   getProfileRateStatus,
   getWindowLabel,
   isProfileWeeklyTokensLow,
+  normalizeLowRemainingPercentThreshold,
   sortProfilesForDisplay
 } = require('./profileStatus');
 const { formatTokenUsage } = require('./rateLimitParser');
@@ -15,6 +16,7 @@ const {
   PROFILE_QUICK_PICK_SECTIONS,
   PROFILE_QUICK_PICK_SECONDARY_SORT_OPTIONS,
   PROFILE_QUICK_PICK_SORT_OPTIONS,
+  formatLowRemainingPercentThreshold,
   getProfileQuickPickSectionLabel,
   getProfileQuickPickSettings,
   isProfileQuickPickSectionVisible,
@@ -233,7 +235,8 @@ class RateLimitDetailsPanel {
           event.affectsConfiguration('codexSwitch.profileQuickPick.sectionOrder') ||
           event.affectsConfiguration('codexSwitch.profileQuickPick.profileSort') ||
           event.affectsConfiguration('codexSwitch.profileQuickPick.secondaryProfileSort') ||
-          event.affectsConfiguration('codexSwitch.profileQuickPick.roundLowWeeklyRemainingToZero')
+          event.affectsConfiguration('codexSwitch.profileQuickPick.roundLowWeeklyRemainingToZero') ||
+          event.affectsConfiguration('codexSwitch.profileQuickPick.lowWeeklyRemainingZeroThreshold')
         ) {
           void this.update();
         }
@@ -334,6 +337,9 @@ class RateLimitDetailsPanel {
       case 'setRoundLowWeeklyRemainingToZero':
         await this.setRoundLowWeeklyRemainingToZero(message.enabled);
         return;
+      case 'setLowWeeklyRemainingZeroThreshold':
+        await this.setLowWeeklyRemainingZeroThreshold(message.threshold);
+        return;
       default:
         throw new Error(`Unsupported Codex Accounts webview command: ${message.command}`);
     }
@@ -410,6 +416,14 @@ class RateLimitDetailsPanel {
     await this.updateCodexSwitchConfiguration(
       'profileQuickPick.roundLowWeeklyRemainingToZero',
       enabled === true
+    );
+    await this.update();
+  }
+
+  async setLowWeeklyRemainingZeroThreshold(threshold) {
+    await this.updateCodexSwitchConfiguration(
+      'profileQuickPick.lowWeeklyRemainingZeroThreshold',
+      normalizeLowRemainingPercentThreshold(threshold)
     );
     await this.update();
   }
@@ -638,11 +652,16 @@ class RateLimitDetailsPanel {
   }
 
   async buildProfileViewModels(profiles, activeProfileId, now) {
-    const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now);
+    const quickPickSettings = getProfileQuickPickSettings();
+    const lowWeeklyOptions = {
+      activeProfileId,
+      lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
+    };
+    const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now, lowWeeklyOptions);
 
     return Promise.all(sortedProfiles.map(async (profile, index) => {
       const status = getProfileRateStatus(profile, now, { activeProfileId });
-      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, { activeProfileId });
+      const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, lowWeeklyOptions);
       const tokens = await this.profileManager.readStoredTokens(profile.id);
       const authState = hasRequiredStoredTokens(tokens)
         ? {
@@ -831,6 +850,9 @@ class RateLimitDetailsPanel {
         quickPickSettings.secondaryProfileSort === option.id ? 'selected' : ''
       }>${escapeHtml(option.label)}</option>`;
     });
+    const lowWeeklyThresholdText = formatLowRemainingPercentThreshold(
+      quickPickSettings.lowWeeklyRemainingZeroThreshold
+    );
 
     return `
       <div class="summary-card account-switcher-settings">
@@ -850,8 +872,20 @@ class RateLimitDetailsPanel {
               <input id="roundLowWeeklyRemainingInput" type="checkbox" ${
                 quickPickSettings.roundLowWeeklyRemainingToZero ? 'checked' : ''
               }>
-              Show weekly remaining below 5% as 0%
+              Show weekly remaining below threshold as 0%
             </label>
+            <label class="settings-label" for="lowWeeklyRemainingZeroThresholdInput">Weekly zero threshold</label>
+            <div class="inline-setting">
+              <input
+                id="lowWeeklyRemainingZeroThresholdInput"
+                type="number"
+                min="0"
+                max="100"
+                step="0.1"
+                value="${escapeHtml(lowWeeklyThresholdText)}"
+              >
+              <span>%</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1176,6 +1210,14 @@ class RateLimitDetailsPanel {
             .settings-toggle {
               margin-top: 4px;
             }
+            .inline-setting {
+              display: flex;
+              align-items: center;
+              gap: 6px;
+            }
+            .inline-setting input {
+              max-width: 90px;
+            }
             .badge {
               display: inline-flex;
               align-items: center;
@@ -1443,6 +1485,7 @@ class RateLimitDetailsPanel {
               problemFilter: document.getElementById('problemFilter'),
               quickPickSecondarySortSelect: document.getElementById('quickPickSecondarySortSelect'),
               quickPickSortSelect: document.getElementById('quickPickSortSelect'),
+              lowWeeklyRemainingZeroThresholdInput: document.getElementById('lowWeeklyRemainingZeroThresholdInput'),
               roundLowWeeklyRemainingInput: document.getElementById('roundLowWeeklyRemainingInput'),
               searchInput: document.getElementById('searchInput'),
               selectedCount: document.getElementById('selectedCount'),
@@ -1600,7 +1643,7 @@ class RateLimitDetailsPanel {
               name.textContent = account.name;
               cell.appendChild(name);
               if (account.active) {
-                addBadge(name, 'ACTIVE');
+                addBadge(name, 'THIS WINDOW');
               }
               if (account.weeklyLow) {
                 addBadge(name, 'WEEKLY LOW', 'warning');
@@ -1865,6 +1908,11 @@ class RateLimitDetailsPanel {
 
               if (target === elements.roundLowWeeklyRemainingInput) {
                 post('setRoundLowWeeklyRemainingToZero', { enabled: target.checked });
+                return;
+              }
+
+              if (target === elements.lowWeeklyRemainingZeroThresholdInput) {
+                post('setLowWeeklyRemainingZeroThreshold', { threshold: Number(target.value) });
                 return;
               }
 

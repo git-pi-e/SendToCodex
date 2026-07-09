@@ -41,6 +41,7 @@ const { SelectionPopupSuppression } = require('./ui/SelectionPopupSuppression');
 const { TerminalSelectionStatusBarController } = require('./ui/TerminalSelectionStatusBarController');
 
 const CODEX_POST_SWITCH_WARMUP_KEY = 'codexSwitch.pendingCodexPostSwitchWarmup';
+const CODEX_POST_SWITCH_AUTH_SYNC_KEY = 'codexSwitch.pendingPostSwitchAuthSync';
 const AUTH_WATCHER_SETTLE_TIMEOUT_MS = 15 * 1000;
 const ACTIVE_WINDOW_USAGE_HEARTBEAT_MS = 30 * 1000;
 
@@ -253,12 +254,17 @@ function activate(context) {
       codexLogSize
     });
     if (options.willReloadWindow) {
+      const scheduledAt = Date.now();
       await context.workspaceState.update(CODEX_POST_SWITCH_WARMUP_KEY, {
         profileId,
-        scheduledAt: Date.now(),
+        scheduledAt,
         restoreChatContext,
         restoreStrategy,
         codexLogSize
+      });
+      await context.workspaceState.update(CODEX_POST_SWITCH_AUTH_SYNC_KEY, {
+        profileId,
+        scheduledAt
       });
       logger.debug('Codex restore debug: pending post-switch warm-up saved to workspaceState.', {
         key: CODEX_POST_SWITCH_WARMUP_KEY,
@@ -291,6 +297,45 @@ function activate(context) {
         sidebarResumeStartOffset: codexLogSize
       });
     }, delayMs);
+  };
+
+  const consumePendingPostSwitchAuthSync = async () => {
+    const pending = context.workspaceState.get(CODEX_POST_SWITCH_AUTH_SYNC_KEY);
+    if (!pending || !pending.scheduledAt) {
+      return null;
+    }
+
+    await context.workspaceState.update(CODEX_POST_SWITCH_AUTH_SYNC_KEY, undefined);
+    if (!isPendingCodexPostSwitchWarmupFresh(pending, Date.now(), DEFAULT_PENDING_WARMUP_MAX_AGE_MS)) {
+      logger.warn('Skipped stale post-switch Codex auth sync.', {
+        profileId: pending.profileId || null,
+        scheduledAt: pending.scheduledAt,
+        maxAgeMs: DEFAULT_PENDING_WARMUP_MAX_AGE_MS
+      });
+      return null;
+    }
+
+    return pending.profileId || null;
+  };
+
+  const syncProfilesOnActivation = async () => {
+    await profileManager.syncCurrentAuthToMatchingProfile();
+    const pendingProfileId = await consumePendingPostSwitchAuthSync();
+    if (!pendingProfileId) {
+      logger.info(
+        'Skipping startup Codex auth sync because this activation was not caused by a profile-switch reload.'
+      );
+      await profileManager.initializeWindowActiveProfileFromCurrentAuth(true);
+      await rateLimitMonitor.refresh(true);
+      return;
+    }
+
+    logger.info('Applying startup Codex auth sync for a profile-switch reload.', {
+      profileId: pendingProfileId
+    });
+    await profileManager.maybeSyncToCodexAuthFile(pendingProfileId);
+    await profileManager.initializeWindowActiveProfileFromCurrentAuth(true);
+    await rateLimitMonitor.refresh(true);
   };
 
   const runPendingCodexPostSwitchWarmup = async () => {
@@ -465,6 +510,11 @@ function activate(context) {
   const handleProfileWatcherChange = async (event = {}) => {
     if (event.source === 'windowUsage') {
       await refreshProfileUi({ updateActiveWindowUsage: false });
+      return;
+    }
+
+    if (event.source === 'profiles') {
+      await refreshProfileUi();
       return;
     }
 
@@ -693,7 +743,7 @@ function activate(context) {
       if (event.affectsConfiguration('codexSwitch.enabled') && areProfileFeaturesEnabled()) {
         void (async () => {
           await profileManager.syncCurrentAuthToMatchingProfile();
-          await profileManager.syncActiveProfileToCodexAuthFile();
+          await profileManager.initializeWindowActiveProfileFromCurrentAuth(true);
           await rateLimitMonitor.refresh(true);
         })();
       }
@@ -723,11 +773,7 @@ function activate(context) {
   void refreshProfileUi();
   void runPendingCodexPostSwitchWarmup();
   if (areProfileFeaturesEnabled()) {
-    void (async () => {
-      await profileManager.syncCurrentAuthToMatchingProfile();
-      await profileManager.syncActiveProfileToCodexAuthFile();
-      await rateLimitMonitor.refresh(true);
-    })();
+    void syncProfilesOnActivation();
   }
   void manager.activate();
 }

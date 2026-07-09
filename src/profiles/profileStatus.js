@@ -13,12 +13,30 @@ function normalizeNumber(value, fallback) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
-const LOW_REMAINING_PERCENT_THRESHOLD = 5;
+const DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD = 1;
 const FULL_REMAINING_PERCENT_THRESHOLD = 99;
 const DEFAULT_PRIMARY_WINDOW_MINUTES = 5 * 60;
 const MINUTES_PER_DAY = 24 * 60;
 const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
+const CODEX_APP_SERVER_RATE_LIMIT_SOURCE_PREFIX = 'codex-app-server://account/rateLimits/read';
 const RATE_LIMIT_DISPLAY_FRESHNESS_MS = 60 * 60 * 1000;
+
+function normalizeLowRemainingPercentThreshold(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD;
+  }
+
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function getLowRemainingPercentThreshold(options = {}) {
+  return normalizeLowRemainingPercentThreshold(
+    options.lowRemainingPercentThreshold == null
+      ? DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD
+      : options.lowRemainingPercentThreshold
+  );
+}
 
 function normalizePlanType(planType) {
   const normalized = String(planType || '').trim();
@@ -148,7 +166,16 @@ function isUsageApiRateLimitState(rateLimitState) {
   return Boolean(
     rateLimitState &&
       typeof rateLimitState.sourceFile === 'string' &&
-      rateLimitState.sourceFile.startsWith(USAGE_API_SOURCE_PREFIX)
+      (rateLimitState.sourceFile.startsWith(USAGE_API_SOURCE_PREFIX) ||
+        rateLimitState.sourceFile.startsWith(CODEX_APP_SERVER_RATE_LIMIT_SOURCE_PREFIX))
+  );
+}
+
+function isCodexAppServerRateLimitState(rateLimitState) {
+  return Boolean(
+    rateLimitState &&
+      typeof rateLimitState.sourceFile === 'string' &&
+      rateLimitState.sourceFile.startsWith(CODEX_APP_SERVER_RATE_LIMIT_SOURCE_PREFIX)
   );
 }
 
@@ -183,6 +210,10 @@ function getRateLimitSourceType(rateLimitState) {
     return null;
   }
 
+  if (isCodexAppServerRateLimitState(rateLimitState)) {
+    return 'codexAppServer';
+  }
+
   return isUsageApiRateLimitState(rateLimitState) ? 'usageApi' : 'localSessions';
 }
 
@@ -212,7 +243,7 @@ function getProfileRateStatus(profile, now = Date.now(), options = {}) {
       cooldownUntil: null,
       compactText: 'n/a',
       quickPickText: '[n/a]',
-      tooltipText: 'No fresh Usage API data',
+      tooltipText: 'No fresh exact rate-limit data',
       maxUsedPercent: 0,
       primary: null,
       secondary: null,
@@ -278,7 +309,10 @@ function roundRemainingPercent(remainingPercent, options = {}) {
   }
 
   const normalized = Math.max(0, Math.min(100, normalizeNumber(remainingPercent, 0)));
-  if (options.roundLowRemainingToZero === true && normalized < LOW_REMAINING_PERCENT_THRESHOLD) {
+  if (
+    options.roundLowRemainingToZero === true &&
+    normalized < getLowRemainingPercentThreshold(options)
+  ) {
     return 0;
   }
 
@@ -294,9 +328,9 @@ function getWindowRemainingPercent(windowState, now = Date.now(), options = {}) 
   return roundRemainingPercent(remainingPercent, options);
 }
 
-function isWindowLowRemaining(windowState, now = Date.now()) {
+function isWindowLowRemaining(windowState, now = Date.now(), options = {}) {
   const remainingPercent = getRawWindowRemainingPercent(windowState, now);
-  return remainingPercent != null && remainingPercent < LOW_REMAINING_PERCENT_THRESHOLD;
+  return remainingPercent != null && remainingPercent < getLowRemainingPercentThreshold(options);
 }
 
 function isWindowZeroRemaining(windowState, now = Date.now()) {
@@ -322,13 +356,13 @@ function applyWeeklyZeroToPrimary(primary, secondary, now = Date.now()) {
 
 function isProfileWeeklyTokensLow(profile, now = Date.now(), options = {}) {
   const status = getProfileRateStatus(profile, now, options);
-  return isWindowLowRemaining(status.secondary, now);
+  return isWindowLowRemaining(status.secondary, now, options);
 }
 
 function getProfileDisplaySortKey(profile, now = Date.now(), options = {}) {
   const status = getProfileRateStatus(profile, now, options);
   const planType = normalizePlanType(profile && profile.planType);
-  const weeklyTokensLow = isWindowLowRemaining(status.secondary, now);
+  const weeklyTokensLow = isWindowLowRemaining(status.secondary, now, options);
 
   return {
     primaryRemainingPercent: weeklyTokensLow ? 0 : getWindowRemainingPercent(status.primary, now),
@@ -340,15 +374,15 @@ function getProfileDisplaySortKey(profile, now = Date.now(), options = {}) {
   };
 }
 
-function compareProfilesForDisplay(left, right, activeProfileId, now = Date.now()) {
+function compareProfilesForDisplay(left, right, activeProfileId, now = Date.now(), options = {}) {
   const leftActive = Boolean(activeProfileId && left && left.id === activeProfileId);
   const rightActive = Boolean(activeProfileId && right && right.id === activeProfileId);
   if (leftActive !== rightActive) {
     return leftActive ? -1 : 1;
   }
 
-  const leftKey = getProfileDisplaySortKey(left, now, { activeProfileId });
-  const rightKey = getProfileDisplaySortKey(right, now, { activeProfileId });
+  const leftKey = getProfileDisplaySortKey(left, now, { ...options, activeProfileId });
+  const rightKey = getProfileDisplaySortKey(right, now, { ...options, activeProfileId });
   const numericSorts = [
     rightKey.primaryRemainingPercent - leftKey.primaryRemainingPercent,
     rightKey.secondaryRemainingPercent - leftKey.secondaryRemainingPercent,
@@ -367,9 +401,9 @@ function compareProfilesForDisplay(left, right, activeProfileId, now = Date.now(
   return leftKey.name.localeCompare(rightKey.name);
 }
 
-function sortProfilesForDisplay(profiles, activeProfileId, now = Date.now()) {
+function sortProfilesForDisplay(profiles, activeProfileId, now = Date.now(), options = {}) {
   return [...(profiles || [])].sort((left, right) => {
-    return compareProfilesForDisplay(left, right, activeProfileId, now);
+    return compareProfilesForDisplay(left, right, activeProfileId, now, options);
   });
 }
 
@@ -451,7 +485,8 @@ function formatCompactWindow(windowState, label, now = Date.now(), options = {})
   const percentValue =
     percentageMode === 'remaining'
       ? getWindowRemainingPercent(windowState, now, {
-          roundLowRemainingToZero: options.roundLowRemainingToZero === true
+          roundLowRemainingToZero: options.roundLowRemainingToZero === true,
+          lowRemainingPercentThreshold: options.lowRemainingPercentThreshold
         })
       : isReady
         ? 0
@@ -476,7 +511,8 @@ function formatCompactRateSummary(status, now = Date.now(), options = {}) {
   const secondaryText = formatCompactWindow(status.secondary, 'W', now, {
     includeCountdown: options.includeSecondaryCountdown !== false,
     percentageMode: options.percentageMode,
-    roundLowRemainingToZero: options.roundLowWeeklyRemainingToZero === true
+    roundLowRemainingToZero: options.roundLowWeeklyRemainingToZero === true,
+    lowRemainingPercentThreshold: options.lowRemainingPercentThreshold
   });
 
   return `${primaryText} | ${secondaryText}`;
@@ -484,6 +520,7 @@ function formatCompactRateSummary(status, now = Date.now(), options = {}) {
 
 module.exports = {
   compareProfilesForDisplay,
+  DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD,
   formatAbsoluteTimestamp,
   formatCompactRateSummary,
   formatCompactWindow,
@@ -500,6 +537,7 @@ module.exports = {
   isFreshUsageApiRateLimitState,
   isUsageApiRateLimitState,
   isProfileWeeklyTokensLow,
+  normalizeLowRemainingPercentThreshold,
   normalizeTimestamp,
   sortProfilesForDisplay
 };

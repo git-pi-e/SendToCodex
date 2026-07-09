@@ -33,6 +33,7 @@ const {
 } = require('./profileStatus');
 const { RateLimitDetailsPanel } = require('./webview');
 const {
+  formatLowRemainingPercentThreshold,
   getProfileQuickPickSectionLabel,
   getProfileQuickPickSettings,
   isProfileQuickPickSectionVisible,
@@ -143,18 +144,30 @@ function getOtherWindowUsageEntries(profileId, otherWindowProfileUsageByProfileI
   return otherWindowProfileUsageByProfileId[profileId] || [];
 }
 
-function formatOtherWindowUsageDescription(entries) {
-  if (!entries || !entries.length) {
+function formatWindowUsageLabel(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s*\(Workspace\)\s*$/i, '')
+    .trim();
+}
+
+function formatWindowUsageDescription(entries, options = {}) {
+  const includeCurrentWindow = options.includeCurrentWindow === true;
+  if ((!entries || !entries.length) && !includeCurrentWindow) {
     return '';
   }
 
+  const currentWindowLabel = includeCurrentWindow
+    ? formatWindowUsageLabel(options.currentWindowLabel) || 'This window'
+    : null;
   const labels = [...new Set(
-    entries
-      .map((entry) => String((entry && entry.workspaceLabel) || '').trim())
+    (currentWindowLabel ? [{ workspaceLabel: currentWindowLabel }] : [])
+      .concat(entries || [])
+      .map((entry) => formatWindowUsageLabel(entry && entry.workspaceLabel))
       .filter(Boolean)
   )];
-  const suffix = labels.length ? `: ${labels.slice(0, 2).join(', ')}` : '';
-  return `IN USE ELSEWHERE${suffix}`;
+  const suffix = labels.length ? ` ${labels.slice(0, 2).join(', ')}` : '';
+  return `$(window)${suffix}`;
 }
 
 async function confirmSwitchToProfileUsedInOtherWindow(profile, profileManager) {
@@ -167,7 +180,7 @@ async function confirmSwitchToProfileUsedInOtherWindow(profile, profileManager) 
   const profileName = displayProfileName(profile);
   const labels = [...new Set(
     entries
-      .map((entry) => String((entry && entry.workspaceLabel) || '').trim())
+      .map((entry) => formatWindowUsageLabel(entry && entry.workspaceLabel))
       .filter(Boolean)
   )];
   const locationText = labels.length ? ` (${labels.join(', ')})` : '';
@@ -183,30 +196,40 @@ async function confirmSwitchToProfileUsedInOtherWindow(profile, profileManager) 
 async function buildProfileQuickPickItems(profiles, activeProfileId, profileManager) {
   const now = Date.now();
   const quickPickSettings = getProfileQuickPickSettings();
+  const lowWeeklyOptions = {
+    activeProfileId,
+    lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
+  };
   const otherWindowProfileUsageByProfileId =
     profileManager.getOtherActiveWindowProfileUsageByProfileId();
-  const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now);
+  const sortedProfiles = sortProfilesForDisplay(profiles, activeProfileId, now, lowWeeklyOptions);
   return Promise.all(sortedProfiles.map(async (profile, index) => {
     const status = getProfileRateStatus(profile, now, { activeProfileId });
     const descriptionParts = [];
     const authState = await getProfileAuthState(profileManager, profile.id);
     const isActive = profile.id === activeProfileId;
-    const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, { activeProfileId });
+    const weeklyTokensLow = isProfileWeeklyTokensLow(profile, now, lowWeeklyOptions);
 
-    if (isActive) {
-      descriptionParts.push('ACTIVE PROFILE');
-    }
     if (weeklyTokensLow) {
-      descriptionParts.push('W < 5%');
+      descriptionParts.push(
+        `W < ${formatLowRemainingPercentThreshold(
+          quickPickSettings.lowWeeklyRemainingZeroThreshold
+        )}%`
+      );
     }
     const otherWindowUsageEntries = getOtherWindowUsageEntries(
       profile.id,
       otherWindowProfileUsageByProfileId
     );
-    const otherWindowUsageDescription =
-      formatOtherWindowUsageDescription(otherWindowUsageEntries);
-    if (otherWindowUsageDescription) {
-      descriptionParts.push(otherWindowUsageDescription);
+    const windowUsageDescription =
+      formatWindowUsageDescription(otherWindowUsageEntries, {
+        includeCurrentWindow: isActive,
+        currentWindowLabel: isActive && profileManager.getWindowUsageWorkspaceLabel
+          ? profileManager.getWindowUsageWorkspaceLabel()
+          : undefined
+      });
+    if (windowUsageDescription) {
+      descriptionParts.push(windowUsageDescription);
     }
     if (authState.description) {
       descriptionParts.push(authState.description);
@@ -217,7 +240,8 @@ async function buildProfileQuickPickItems(profiles, activeProfileId, profileMana
       includePrimaryCountdown: true,
       includeSecondaryCountdown: true,
       percentageMode: 'remaining',
-      roundLowWeeklyRemainingToZero: quickPickSettings.roundLowWeeklyRemainingToZero
+      roundLowWeeklyRemainingToZero: quickPickSettings.roundLowWeeklyRemainingToZero,
+      lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
     });
     const estimateSuffix = status.isEstimatedRateLimitData ? ' • estimate' : '';
     const email = profile.email && profile.email !== 'Unknown'

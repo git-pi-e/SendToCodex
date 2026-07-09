@@ -2,7 +2,11 @@
 
 const vscode = require('vscode');
 const { areProfileFeaturesEnabled } = require('./featureFlags');
-const { getUsageApiRateLimitData } = require('./rateLimitApiClient');
+const { getCodexAppServerRateLimitData } = require('./codexAppServerRateLimitClient');
+const {
+  getUsageApiRateLimitData,
+  isAccessTokenExpiringSoon
+} = require('./rateLimitApiClient');
 const { getRateLimitData } = require('./rateLimitParser');
 const {
   getProfileRateStatus,
@@ -10,7 +14,11 @@ const {
   isProfileWeeklyTokensLow,
   sortProfilesForDisplay
 } = require('./profileStatus');
+const { getProfileQuickPickSettings } = require('./quickPickSettings');
 const { displayProfileName } = require('./privacy');
+
+const LOW_USAGE_SWITCH_PROMPT_STATE_KEY = 'codexSwitch.lowUsageSwitchPrompt';
+const LOW_USAGE_SWITCH_PROMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 class RateLimitMonitor {
   constructor(profileManager, logger) {
@@ -23,6 +31,8 @@ class RateLimitMonitor {
     this.lastRefreshResult = null;
     this.lastActiveProfileId = null;
     this.lastLowUsagePromptKey = null;
+    this.lastLowUsagePromptAt = 0;
+    this.lowUsagePromptInFlight = false;
     this.sessionFileByProfileId = new Map();
     this.latestRefreshId = 0;
     this.refreshInFlight = null;
@@ -102,6 +112,23 @@ class RateLimitMonitor {
     return vscode.workspace.getConfiguration('codexRatelimit').get('preferUsageApi', true);
   }
 
+  shouldRefreshAuthBeforeUsageApi(authData) {
+    return isAccessTokenExpiringSoon(authData);
+  }
+
+  shouldTryAppServerAfterUsageApiFailure(usageApiResult) {
+    if (!usageApiResult || usageApiResult.found) {
+      return false;
+    }
+
+    if (usageApiResult.status === 401 || usageApiResult.status === 403) {
+      return true;
+    }
+
+    const errorText = String(usageApiResult.error || '').toLowerCase();
+    return errorText.includes('access token') || errorText.includes('rate-limit windows');
+  }
+
   getWorkspaceCwd() {
     const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
     return folder ? folder.uri.fsPath : null;
@@ -148,27 +175,110 @@ class RateLimitMonitor {
     }
   }
 
+  async syncRefreshedAuthData(profileId, profile, refreshedAuthData) {
+    if (!refreshedAuthData) {
+      return false;
+    }
+
+    if (
+      this.profileManager.matchesAuth &&
+      profile &&
+      !this.profileManager.matchesAuth(profile, refreshedAuthData)
+    ) {
+      const message =
+        'Codex app-server returned refreshed auth for a different account; stored profile tokens were not updated.';
+      if (this.logger) {
+        this.logger.error(message, {
+          profileId,
+          profileEmail: profile.email,
+          refreshedEmail: refreshedAuthData.email
+        });
+      }
+      this.lastError = message;
+      return false;
+    }
+
+    if (this.profileManager.syncStoredProfileAuth) {
+      return this.profileManager.syncStoredProfileAuth(profileId, refreshedAuthData);
+    }
+
+    return false;
+  }
+
+  async recordFreshRateLimitObservation(profileId, profile, observation, source, force) {
+    if (
+      !observation ||
+      !this.shouldAcceptObservationForProfile(profile, observation, {
+        acceptPlanChange: true
+      })
+    ) {
+      return false;
+    }
+
+    this.logObservedPlanChange(profile, observation, source);
+    this.lastError = null;
+    this.lastObservation = observation;
+    await this.profileManager.recordRateLimitObservation(profileId, observation);
+    this.setRefreshResult({
+      source,
+      outcome: 'fresh',
+      profileId,
+      sourceFile: observation.filePath || source,
+      force: Boolean(force)
+    });
+    this.onDidChangeEmitter.fire();
+    void this.maybeSuggestLowUsageSwitch(profileId);
+    return true;
+  }
+
+  async getCodexAppServerRateLimitForProfile(profileId, profile, authData, force) {
+    const result = await getCodexAppServerRateLimitData(authData, this.logger);
+    if (result && result.refreshedAuthData) {
+      await this.syncRefreshedAuthData(profileId, profile, result.refreshedAuthData);
+    }
+
+    if (
+      result &&
+      result.found &&
+      result.data &&
+      (await this.recordFreshRateLimitObservation(
+        profileId,
+        profile,
+        result.data,
+        'codexAppServer',
+        force
+      ))
+    ) {
+      return {
+        found: true,
+        data: result.data
+      };
+    }
+
+    return {
+      found: false,
+      error:
+        result && result.found && result.data
+          ? 'Codex app-server data did not match the active profile plan'
+          : (result && result.error) || 'Codex app-server did not return rate-limit data'
+    };
+  }
+
   setWindowFocused(focused) {
     this.isWindowFocused = focused;
-    if (focused) {
-      this.startRefreshTimer();
-      return;
-    }
-    this.stopRefreshTimer();
+    this.startRefreshTimer();
   }
 
   startRefreshTimer() {
     this.stopRefreshTimer();
 
-    if (!this.isWindowFocused || !areProfileFeaturesEnabled()) {
+    if (!areProfileFeaturesEnabled()) {
       return;
     }
 
     void this.refresh(true);
     this.refreshTimer = setInterval(() => {
-      if (this.isWindowFocused) {
-        void this.refresh(false);
-      }
+      void this.refresh(false);
     }, this.getRefreshIntervalMs());
   }
 
@@ -232,12 +342,120 @@ class RateLimitMonitor {
       .filter((value) => value >= 0);
   }
 
+  getKnownPrimaryRemainingPercents(profile, now, activeProfileId) {
+    const status = getProfileRateStatus(profile, now, { activeProfileId });
+    if (!status.observedAt || !profile || !profile.rateLimitState) {
+      return [];
+    }
+
+    const primaryRemaining = getWindowRemainingPercent(profile.rateLimitState.primary, now);
+    return primaryRemaining >= 0 ? [primaryRemaining] : [];
+  }
+
   isProfileLowOnUsage(profile, now, threshold, activeProfileId) {
-    const remainingPercents = this.getKnownRemainingPercents(profile, now, activeProfileId);
+    const remainingPercents = this.getKnownPrimaryRemainingPercents(
+      profile,
+      now,
+      activeProfileId
+    );
     return remainingPercents.some((value) => value <= threshold);
   }
 
-  isUsableSwitchCandidate(profile, now, threshold, freshnessMs, activeProfileId) {
+  getLowUsagePromptStateBucket() {
+    return this.profileManager && this.profileManager.context
+      ? this.profileManager.context.globalState
+      : null;
+  }
+
+  getLowUsagePromptState() {
+    const bucket = this.getLowUsagePromptStateBucket();
+    const state = bucket && typeof bucket.get === 'function'
+      ? bucket.get(LOW_USAGE_SWITCH_PROMPT_STATE_KEY)
+      : null;
+    return state && typeof state === 'object' ? state : {};
+  }
+
+  async updateLowUsagePromptState(patch) {
+    const bucket = this.getLowUsagePromptStateBucket();
+    if (!bucket || typeof bucket.update !== 'function') {
+      return;
+    }
+
+    await bucket.update(LOW_USAGE_SWITCH_PROMPT_STATE_KEY, {
+      ...this.getLowUsagePromptState(),
+      ...patch
+    });
+  }
+
+  shouldSuppressLowUsagePrompt(promptKey, now) {
+    if (this.lowUsagePromptInFlight) {
+      return true;
+    }
+
+    if (
+      this.lastLowUsagePromptKey === promptKey &&
+      now - this.lastLowUsagePromptAt >= 0 &&
+      now - this.lastLowUsagePromptAt < LOW_USAGE_SWITCH_PROMPT_COOLDOWN_MS
+    ) {
+      return true;
+    }
+
+    const state = this.getLowUsagePromptState();
+    const lastPromptAt = Number(state.lastPromptAt);
+    return Number.isFinite(lastPromptAt) &&
+      now - lastPromptAt >= 0 &&
+      now - lastPromptAt < LOW_USAGE_SWITCH_PROMPT_COOLDOWN_MS;
+  }
+
+  async disableLowUsageSwitchPrompts() {
+    await vscode.workspace
+      .getConfiguration('codexSwitch')
+      .update(
+        'lowUsageProfileSwitchBehavior',
+        'off',
+        vscode.ConfigurationTarget.Global
+      );
+    await this.updateLowUsagePromptState({
+      disabledAt: Date.now()
+    });
+    if (this.logger) {
+      this.logger.info('Disabled Codex low-usage switch prompts from the prompt checkbox.');
+    }
+  }
+
+  async showLowUsageSwitchPrompt(activeProfile, candidate, threshold) {
+    const switchItem = {
+      id: 'switch',
+      label: `$(arrow-swap) Switch to ${displayProfileName(candidate)}`,
+      description: 'Use this account now',
+      alwaysShow: true
+    };
+    const disableItem = {
+      id: 'disable',
+      label: "$(bell-slash) Don't show again",
+      description: 'Disable low-usage switch prompts',
+      alwaysShow: true
+    };
+
+    const selections = await vscode.window.showQuickPick(
+      [switchItem, disableItem],
+      {
+        canPickMany: true,
+        ignoreFocusOut: true,
+        title: 'Codex profile is low on 5H usage',
+        placeHolder:
+          `Profile "${displayProfileName(activeProfile)}" is at or below ${threshold}% 5H remaining. Select one or both actions.`
+      }
+    );
+
+    const selectedItems = Array.isArray(selections) ? selections : [];
+    return {
+      switchProfile: selectedItems.some((item) => item && item.id === 'switch'),
+      disablePrompts: selectedItems.some((item) => item && item.id === 'disable')
+    };
+  }
+
+  isUsableSwitchCandidate(profile, now, threshold, freshnessMs, activeProfileId, options = {}) {
     if (!profile || !profile.rateLimitState || !profile.rateLimitState.observedAt) {
       return false;
     }
@@ -246,7 +464,7 @@ class RateLimitMonitor {
       return false;
     }
 
-    if (isProfileWeeklyTokensLow(profile, now, { activeProfileId })) {
+    if (isProfileWeeklyTokensLow(profile, now, { ...options, activeProfileId })) {
       return false;
     }
 
@@ -264,6 +482,10 @@ class RateLimitMonitor {
       const now = Date.now();
       const threshold = this.getLowUsageSwitchThreshold();
       const freshnessMs = this.getLowUsageSwitchFreshnessMs();
+      const quickPickSettings = getProfileQuickPickSettings();
+      const lowWeeklyOptions = {
+        lowRemainingPercentThreshold: quickPickSettings.lowWeeklyRemainingZeroThreshold
+      };
       const profiles = await this.profileManager.listProfiles();
       const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
       if (
@@ -281,24 +503,30 @@ class RateLimitMonitor {
               now,
               threshold,
               freshnessMs,
-              activeProfileId
+              activeProfileId,
+              lowWeeklyOptions
             );
         }),
         undefined,
-        now
+        now,
+        { ...lowWeeklyOptions, activeProfileId }
       );
       const candidate = candidates[0];
       if (!candidate) {
         return;
       }
 
-      const promptKey = `${behavior}:${activeProfileId}:${candidate.id}:${Math.floor(now / 3600000)}`;
-      if (this.lastLowUsagePromptKey === promptKey) {
+      const promptKey = `${behavior}:${activeProfileId}:${candidate.id}:${threshold}`;
+      if (this.shouldSuppressLowUsagePrompt(promptKey, now)) {
         return;
       }
       this.lastLowUsagePromptKey = promptKey;
+      this.lastLowUsagePromptAt = now;
+      await this.updateLowUsagePromptState({
+        lastPromptKey: promptKey,
+        lastPromptAt: now
+      });
 
-      const switchLabel = `Switch to ${displayProfileName(candidate)}`;
       if (behavior === 'auto') {
         void vscode.window.showInformationMessage(
           `Codex profile "${displayProfileName(activeProfile)}" is low on usage. Switching to "${displayProfileName(candidate)}".`
@@ -307,11 +535,17 @@ class RateLimitMonitor {
         return;
       }
 
-      const selection = await vscode.window.showInformationMessage(
-        `Codex profile "${displayProfileName(activeProfile)}" is at or below ${threshold}% remaining. A fresher profile is available.`,
-        switchLabel
-      );
-      if (selection === switchLabel) {
+      this.lowUsagePromptInFlight = true;
+      let selection;
+      try {
+        selection = await this.showLowUsageSwitchPrompt(activeProfile, candidate, threshold);
+      } finally {
+        this.lowUsagePromptInFlight = false;
+      }
+      if (selection.disablePrompts) {
+        await this.disableLowUsageSwitchPrompts();
+      }
+      if (selection.switchProfile) {
         await vscode.commands.executeCommand('codex-switch.profile.activate', candidate.id);
       }
     } catch (error) {
@@ -411,9 +645,8 @@ class RateLimitMonitor {
       }
 
       let usageApiError = null;
-      let recordedUsageApi = false;
       if (this.shouldUseUsageApi()) {
-        const authData = await this.profileManager.loadAuthData(activeProfileId);
+        let authData = await this.profileManager.loadAuthData(activeProfileId);
         if (refreshId !== this.latestRefreshId) {
           return;
         }
@@ -421,6 +654,27 @@ class RateLimitMonitor {
         if (!authData) {
           usageApiError = 'No stored Codex auth tokens for the active profile';
         } else {
+          let triedAppServer = false;
+          if (this.shouldRefreshAuthBeforeUsageApi(authData)) {
+            triedAppServer = true;
+            const appServerResult = await this.getCodexAppServerRateLimitForProfile(
+              activeProfileId,
+              activeProfile,
+              authData,
+              force
+            );
+            if (refreshId !== this.latestRefreshId) {
+              return;
+            }
+
+            if (appServerResult.found) {
+              return;
+            }
+
+            usageApiError = appServerResult.error;
+            authData = (await this.profileManager.loadAuthData(activeProfileId)) || authData;
+          }
+
           const usageApiResult = await getUsageApiRateLimitData(authData, this.logger);
           if (refreshId !== this.latestRefreshId) {
             return;
@@ -429,43 +683,50 @@ class RateLimitMonitor {
           if (
             usageApiResult.found &&
             usageApiResult.data &&
-            this.shouldAcceptObservationForProfile(activeProfile, usageApiResult.data, {
-              acceptPlanChange: true
-            })
-          ) {
-            this.logObservedPlanChange(activeProfile, usageApiResult.data, 'usageApi');
-            this.lastError = null;
-            this.lastObservation = usageApiResult.data;
-            await this.profileManager.recordRateLimitObservation(
+            (await this.recordFreshRateLimitObservation(
               activeProfileId,
-              usageApiResult.data
-            );
-            recordedUsageApi = true;
-            this.setRefreshResult({
-              source: 'usageApi',
-              outcome: 'fresh',
-              profileId: activeProfileId,
-              sourceFile: usageApiResult.data.filePath || 'usage-api',
-              force: Boolean(force)
-            });
-            this.onDidChangeEmitter.fire();
-            void this.maybeSuggestLowUsageSwitch(activeProfileId);
+              activeProfile,
+              usageApiResult.data,
+              'usageApi',
+              force
+            ))
+          ) {
             return;
           }
 
+          if (!triedAppServer && this.shouldTryAppServerAfterUsageApiFailure(usageApiResult)) {
+            const appServerResult = await this.getCodexAppServerRateLimitForProfile(
+              activeProfileId,
+              activeProfile,
+              authData,
+              force
+            );
+            if (refreshId !== this.latestRefreshId) {
+              return;
+            }
+
+            if (appServerResult.found) {
+              return;
+            }
+
+            usageApiError = [
+              usageApiResult && usageApiResult.error,
+              `Codex app-server fallback failed: ${appServerResult.error}`
+            ]
+              .filter(Boolean)
+              .join('; ');
+          }
+
           usageApiError =
-            usageApiResult && usageApiResult.found && usageApiResult.data
+            usageApiError ||
+            (usageApiResult && usageApiResult.found && usageApiResult.data
               ? 'Usage API data did not match the active profile plan'
               : (usageApiResult && usageApiResult.error) ||
-                'Codex Usage API did not return rate-limit data';
+                'Codex Usage API did not return rate-limit data');
         }
       } else {
         usageApiError =
           'Codex Usage API is disabled; exact active-profile limit display is unavailable';
-      }
-
-      if (recordedUsageApi) {
-        return;
       }
 
       const activeSinceMs = await this.profileManager.getActiveProfileActivatedAt();
