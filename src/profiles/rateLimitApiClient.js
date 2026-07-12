@@ -1,5 +1,7 @@
 'use strict';
 
+const { normalizeRateLimitWindowLayout } = require('./rateLimitWindowLayout');
+
 const USAGE_API_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const REQUEST_TIMEOUT_MS = 10000;
 const WINDOW_SECONDS_TO_MINUTES = 60;
@@ -126,6 +128,10 @@ function normalizeUsageApiPayload(payload) {
 
   const nowMs = Date.now();
   const rateLimit = snapshot.rate_limit;
+  const windows = normalizeRateLimitWindowLayout(
+    normalizeUsageWindow(rateLimit.primary_window, nowMs),
+    normalizeUsageWindow(rateLimit.secondary_window, nowMs)
+  );
 
   return {
     filePath: USAGE_API_URL,
@@ -136,8 +142,8 @@ function normalizeUsageApiPayload(payload) {
     sessionCwd: null,
     totalUsage: createEmptyTokenUsage(),
     lastUsage: createEmptyTokenUsage(),
-    primary: normalizeUsageWindow(rateLimit.primary_window, nowMs),
-    secondary: normalizeUsageWindow(rateLimit.secondary_window, nowMs)
+    primary: windows.primary,
+    secondary: windows.secondary
   };
 }
 

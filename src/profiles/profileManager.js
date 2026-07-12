@@ -6,6 +6,7 @@ const path = require('path');
 const vscode = require('vscode');
 const { randomUUID } = require('crypto');
 const { getDefaultCodexAuthPath, loadAuthDataFromFile } = require('./authManager');
+const { mutateJsonFileSync } = require('./atomicJsonStore');
 const { syncCodexAuthFile } = require('./codexAuthSync');
 const { displayProfileName } = require('./privacy');
 const {
@@ -474,14 +475,39 @@ class ProfileManager {
   writeProfilesFile(data) {
     this.ensureStorageDir();
     const normalized = normalizeProfilesFile(data);
-    if (this.isRemoteFilesMode()) {
-      writeJsonFile(this.getProfilesPath(), normalized);
-      return;
-    }
+    this.mutateProfilesFile(() => normalized);
+  }
 
-    fs.writeFileSync(this.getProfilesPath(), JSON.stringify(normalized, null, 2), {
-      encoding: 'utf8'
-    });
+  mutateProfilesFile(mutate) {
+    this.ensureStorageDir();
+    const filePath = this.getProfilesPath();
+    try {
+      return mutateJsonFileSync(
+        filePath,
+        { version: CURRENT_PROFILES_VERSION, profiles: [] },
+        normalizeProfilesFile,
+        mutate,
+        {
+          skipWriteIfUnchanged: true,
+          onStaleLockRemoved: ({ lockPath, lockAgeMs }) => {
+            this.log('warn', 'Removed stale Codex profiles.json lock.', {
+              lockPath,
+              lockAgeMs
+            });
+          }
+        }
+      );
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      this.log('error', 'Failed to update Codex profiles.json.', {
+        error: message,
+        filePath
+      });
+      void vscode.window.showErrorMessage(
+        `Codex Multitool cannot update profiles.json at ${filePath}: ${message}`
+      );
+      throw new Error(`Failed to update Codex profiles.json at ${filePath}: ${message}`);
+    }
   }
 
   readActiveWindowUsageFile() {
@@ -510,14 +536,49 @@ class ProfileManager {
   writeActiveWindowUsageFile(data) {
     this.ensureStorageDir();
     const normalized = normalizeActiveWindowUsageFile(data);
-    if (this.isRemoteFilesMode()) {
-      writeJsonFile(this.getActiveWindowUsagesPath(), normalized);
-      return;
-    }
+    const filePath = this.getActiveWindowUsagesPath();
+    mutateJsonFileSync(
+      filePath,
+      { version: 1, windows: [] },
+      normalizeActiveWindowUsageFile,
+      () => normalized,
+      {
+        onStaleLockRemoved: ({ lockPath, lockAgeMs }) => {
+          this.log('warn', 'Removed stale Codex active-window usage lock.', {
+            lockPath,
+            lockAgeMs
+          });
+        }
+      }
+    );
+  }
 
-    fs.writeFileSync(this.getActiveWindowUsagesPath(), JSON.stringify(normalized, null, 2), {
-      encoding: 'utf8'
-    });
+  mutateActiveWindowUsageFile(mutate) {
+    this.ensureStorageDir();
+    const filePath = this.getActiveWindowUsagesPath();
+    try {
+      return mutateJsonFileSync(
+        filePath,
+        { version: 1, windows: [] },
+        normalizeActiveWindowUsageFile,
+        mutate,
+        {
+          onStaleLockRemoved: ({ lockPath, lockAgeMs }) => {
+            this.log('warn', 'Removed stale Codex active-window usage lock.', {
+              lockPath,
+              lockAgeMs
+            });
+          }
+        }
+      );
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      this.log('error', 'Failed to update Codex active-window usage file.', {
+        error: message,
+        filePath
+      });
+      throw new Error(`Failed to update Codex active-window usage file at ${filePath}: ${message}`);
+    }
   }
 
   getWindowUsageWorkspaceLabel() {
@@ -539,35 +600,35 @@ class ProfileManager {
       return this.clearActiveWindowProfileUsage();
     }
 
-    const file = this.readActiveWindowUsageFile();
-    const windows = file.windows.filter((entry) => entry.windowId !== this.windowUsageId);
-    windows.push({
-      windowId: this.windowUsageId,
-      profileId: normalizedProfileId,
-      workspaceLabel: this.getWindowUsageWorkspaceLabel(),
-      pid: typeof process !== 'undefined' ? process.pid : null,
-      updatedAt: Date.now()
-    });
-    this.writeActiveWindowUsageFile({
-      version: 1,
-      windows
+    this.mutateActiveWindowUsageFile((file) => {
+      const windows = file.windows.filter((entry) => entry.windowId !== this.windowUsageId);
+      windows.push({
+        windowId: this.windowUsageId,
+        profileId: normalizedProfileId,
+        workspaceLabel: this.getWindowUsageWorkspaceLabel(),
+        pid: typeof process !== 'undefined' ? process.pid : null,
+        updatedAt: Date.now()
+      });
+      return {
+        version: 1,
+        windows
+      };
     });
     return true;
   }
 
   clearActiveWindowProfileUsage() {
     try {
-      const file = this.readActiveWindowUsageFile();
-      const windows = file.windows.filter((entry) => entry.windowId !== this.windowUsageId);
-      if (windows.length === file.windows.length) {
-        return false;
-      }
-
-      this.writeActiveWindowUsageFile({
-        version: 1,
-        windows
+      let changed = false;
+      this.mutateActiveWindowUsageFile((file) => {
+        const windows = file.windows.filter((entry) => entry.windowId !== this.windowUsageId);
+        changed = windows.length !== file.windows.length;
+        return {
+          version: 1,
+          windows
+        };
       });
-      return true;
+      return changed;
     } catch (error) {
       this.log('warn', 'Failed to clear Codex active-window usage.', {
         error: error && error.message ? error.message : String(error)
@@ -1599,81 +1660,76 @@ class ProfileManager {
   }
 
   async clearExpiredCooldowns() {
-    const file = await this.readProfilesFile();
     const now = Date.now();
     let changed = false;
+    this.mutateProfilesFile((file) => {
+      const nextProfiles = file.profiles.map((profile) => {
+        const currentRateLimitState = profile.rateLimitState || null;
+        const nextRateLimitState = currentRateLimitState
+          ? {
+              ...currentRateLimitState,
+              primary: currentRateLimitState.primary
+                ? {
+                    ...currentRateLimitState.primary,
+                    resetAt:
+                      currentRateLimitState.primary.resetAt &&
+                      currentRateLimitState.primary.resetAt > now
+                        ? currentRateLimitState.primary.resetAt
+                        : null
+                  }
+                : null,
+              secondary: currentRateLimitState.secondary
+                ? {
+                    ...currentRateLimitState.secondary,
+                    resetAt:
+                      currentRateLimitState.secondary.resetAt &&
+                      currentRateLimitState.secondary.resetAt > now
+                        ? currentRateLimitState.secondary.resetAt
+                        : null
+                  }
+                : null
+            }
+          : null;
 
-    const nextProfiles = file.profiles.map((profile) => {
-      const currentRateLimitState = profile.rateLimitState || null;
-      let nextRateLimitState = currentRateLimitState
-        ? {
-            ...currentRateLimitState,
-            primary: currentRateLimitState.primary
-              ? {
-                  ...currentRateLimitState.primary,
-                  resetAt:
-                    currentRateLimitState.primary.resetAt &&
-                    currentRateLimitState.primary.resetAt > now
-                      ? currentRateLimitState.primary.resetAt
-                      : null
-                }
-              : null,
-            secondary: currentRateLimitState.secondary
-              ? {
-                  ...currentRateLimitState.secondary,
-                  resetAt:
-                    currentRateLimitState.secondary.resetAt &&
-                    currentRateLimitState.secondary.resetAt > now
-                      ? currentRateLimitState.secondary.resetAt
-                      : null
-                }
-              : null
-          }
-        : null;
+        const activeResetTimes = [
+          nextRateLimitState && nextRateLimitState.primary,
+          nextRateLimitState && nextRateLimitState.secondary
+        ]
+          .filter((windowState) => Boolean(windowState && windowState.resetAt))
+          .map((windowState) => windowState.resetAt);
+        const nextCooldownUntil =
+          activeResetTimes.length > 0 ? Math.max(...activeResetTimes) : null;
 
-      const activeResetTimes = [nextRateLimitState && nextRateLimitState.primary, nextRateLimitState && nextRateLimitState.secondary]
-        .filter((windowState) => Boolean(windowState && windowState.resetAt))
-        .map((windowState) => windowState.resetAt);
-      const nextCooldownUntil =
-        activeResetTimes.length > 0 ? Math.max(...activeResetTimes) : null;
+        if (
+          profile.cooldownUntil !== nextCooldownUntil ||
+          serializeComparable(profile.rateLimitState) !== serializeComparable(nextRateLimitState)
+        ) {
+          changed = true;
+          return normalizeProfileSummary({
+            ...profile,
+            cooldownUntil: nextCooldownUntil,
+            rateLimitState: nextRateLimitState,
+            updatedAt: getNowIso()
+          });
+        }
 
-      if (
-        profile.cooldownUntil !== nextCooldownUntil ||
-        serializeComparable(profile.rateLimitState) !== serializeComparable(nextRateLimitState)
-      ) {
-        changed = true;
-        return normalizeProfileSummary({
-          ...profile,
-          cooldownUntil: nextCooldownUntil,
-          rateLimitState: nextRateLimitState,
-          updatedAt: getNowIso()
-        });
-      }
+        return profile;
+      });
 
-      return profile;
+      return {
+        version: CURRENT_PROFILES_VERSION,
+        profiles: nextProfiles
+      };
     });
-
-    if (!changed) {
-      return false;
+    if (changed) {
+      this.emitChanged();
     }
-
-    this.writeProfilesFile({
-      version: CURRENT_PROFILES_VERSION,
-      profiles: nextProfiles
-    });
-    this.emitChanged();
-    return true;
+    return changed;
   }
 
   async recordRateLimitObservation(profileId, observation) {
-    const file = await this.readProfilesFile();
-    const index = file.profiles.findIndex((profile) => profile.id === profileId);
-    if (index === -1) {
-      return false;
-    }
-
-    const profile = file.profiles[index];
     const now = Date.now();
+    const observationTimestamp = asTimestamp(observation && observation.recordTimestampMs);
     const observedPrimary =
       observation && observation.primary
         ? observation.primary
@@ -1714,22 +1770,50 @@ class ProfileManager {
         : null
     });
 
-    const nextProfile = normalizeProfileSummary({
-      ...profile,
-      planType: asOptionalString(observation && observation.planType) || profile.planType,
-      cooldownUntil,
-      rateLimitState,
-      updatedAt: getNowIso()
+    let changed = false;
+    this.mutateProfilesFile((file) => {
+      const index = file.profiles.findIndex((profile) => profile.id === profileId);
+      if (index === -1) {
+        return file;
+      }
+
+      const profile = file.profiles[index];
+      const storedObservationTimestamp = asTimestamp(
+        profile.rateLimitState && profile.rateLimitState.observedAt
+      );
+      if (
+        storedObservationTimestamp &&
+        (!observationTimestamp || observationTimestamp < storedObservationTimestamp)
+      ) {
+        this.log('warn', 'Rejected older Codex rate-limit observation.', {
+          profileId,
+          observationTimestamp,
+          storedObservationTimestamp,
+          sourceFile: observation && observation.filePath
+        });
+        return file;
+      }
+
+      const nextProfile = normalizeProfileSummary({
+        ...profile,
+        planType: asOptionalString(observation && observation.planType) || profile.planType,
+        cooldownUntil,
+        rateLimitState,
+        updatedAt: getNowIso()
+      });
+
+      if (serializeComparable(profile) === serializeComparable(nextProfile)) {
+        return file;
+      }
+
+      file.profiles[index] = nextProfile;
+      changed = true;
+      return file;
     });
-
-    if (serializeComparable(profile) === serializeComparable(nextProfile)) {
-      return false;
+    if (changed) {
+      this.emitChanged();
     }
-
-    file.profiles[index] = nextProfile;
-    this.writeProfilesFile(file);
-    this.emitChanged();
-    return true;
+    return changed;
   }
 
   createWatchers(onChanged) {

@@ -14,7 +14,6 @@ function normalizeNumber(value, fallback) {
 }
 
 const DEFAULT_LOW_REMAINING_PERCENT_THRESHOLD = 1;
-const FULL_REMAINING_PERCENT_THRESHOLD = 99;
 const DEFAULT_PRIMARY_WINDOW_MINUTES = 5 * 60;
 const MINUTES_PER_DAY = 24 * 60;
 const USAGE_API_SOURCE_PREFIX = 'https://chatgpt.com/backend-api/wham/usage';
@@ -316,10 +315,6 @@ function roundRemainingPercent(remainingPercent, options = {}) {
     return 0;
   }
 
-  if (normalized >= FULL_REMAINING_PERCENT_THRESHOLD) {
-    return 100;
-  }
-
   return Math.round(normalized);
 }
 
@@ -500,6 +495,15 @@ function formatCompactWindow(windowState, label, now = Date.now(), options = {})
 }
 
 function formatCompactRateSummary(status, now = Date.now(), options = {}) {
+  if (!status.primary && status.secondary) {
+    return formatCompactWindow(status.secondary, 'W', now, {
+      includeCountdown: options.includeSecondaryCountdown !== false,
+      percentageMode: options.percentageMode,
+      roundLowRemainingToZero: options.roundLowWeeklyRemainingToZero === true,
+      lowRemainingPercentThreshold: options.lowRemainingPercentThreshold
+    });
+  }
+
   const primaryText = formatCompactWindow(status.primary, getCompactPrimaryWindowLabel(status, now), now, {
     includeCountdown: options.includePrimaryCountdown !== false,
     percentageMode: options.percentageMode

@@ -54,6 +54,24 @@ test('normalizes Codex app-server rate-limit response', () => {
   }
 });
 
+test('classifies a lone seven-day app-server window as the weekly-only mode', () => {
+  const data = normalizeAppServerRateLimitPayload({
+    rateLimits: {
+      planType: 'plus',
+      primary: {
+        usedPercent: 1,
+        windowDurationMins: 10_080,
+        resetsAt: Date.now() / 1000 + 60
+      },
+      secondary: null
+    }
+  });
+
+  assert.equal(data.primary, null);
+  assert.equal(data.secondary.windowMinutes, 10_080);
+  assert.equal(data.secondary.usedPercent, 1);
+});
+
 test('prefers codex entry from multi-limit app-server response', () => {
   const originalNow = Date.now;
   Date.now = () => Date.parse('2026-05-20T10:00:00.000Z');

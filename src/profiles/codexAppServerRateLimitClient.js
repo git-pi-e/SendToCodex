@@ -6,6 +6,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 const { loadAuthDataFromFile, shouldUseWslAuthPath } = require('./authManager');
 const { syncCodexAuthFile } = require('./codexAuthSync');
+const { normalizeRateLimitWindowLayout } = require('./rateLimitWindowLayout');
 
 const APP_SERVER_RATE_LIMIT_SOURCE = 'codex-app-server://account/rateLimits/read';
 const APP_SERVER_REQUEST_TIMEOUT_MS = 30000;
@@ -82,6 +83,10 @@ function normalizeAppServerRateLimitPayload(payload) {
   }
 
   const nowMs = Date.now();
+  const windows = normalizeRateLimitWindowLayout(
+    normalizeAppServerRateLimitWindow(snapshot.primary, nowMs),
+    normalizeAppServerRateLimitWindow(snapshot.secondary, nowMs)
+  );
   return {
     filePath: APP_SERVER_RATE_LIMIT_SOURCE,
     recordTimestampMs: nowMs,
@@ -93,8 +98,8 @@ function normalizeAppServerRateLimitPayload(payload) {
     sessionCwd: null,
     totalUsage: createEmptyTokenUsage(),
     lastUsage: createEmptyTokenUsage(),
-    primary: normalizeAppServerRateLimitWindow(snapshot.primary, nowMs),
-    secondary: normalizeAppServerRateLimitWindow(snapshot.secondary, nowMs)
+    primary: windows.primary,
+    secondary: windows.secondary
   };
 }
 

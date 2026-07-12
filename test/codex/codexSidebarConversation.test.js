@@ -46,6 +46,43 @@ test('uses a created conversation event when no resume event exists', () => {
   assert.equal(match.source, 'official-codex-log-created');
 });
 
+test('prefers the active conversation in this window over a later background resume', () => {
+  const activeConversation = '019f4ed2-1b2f-7e92-9ea8-03ae7551f0bb';
+  const backgroundConversation = '019f50f6-b8ad-7072-b272-347a8bbe1592';
+  const match = findLastResumedConversation(
+    `[info] thread_stream_view_activity_changed active=true conversationId=${activeConversation} resumeState=needs_resume\n` +
+      `[info] maybe_resume_success conversationId=${backgroundConversation} turnCount=3\n`
+  );
+
+  assert.deepEqual(match, {
+    conversationId: activeConversation,
+    index: 7,
+    source: 'official-codex-log-active-view'
+  });
+});
+
+test('uses the most recently activated conversation in this window', () => {
+  const first = '019f4ed2-1b2f-7e92-9ea8-03ae7551f0bb';
+  const second = '019f50f6-b8ad-7072-b272-347a8bbe1592';
+  const match = findLastResumedConversation(
+    `[info] thread_stream_view_activity_changed conversationId=${first} active=true\n` +
+      `[info] thread_stream_view_activity_changed active=true conversationId=${second}\n`
+  );
+
+  assert.equal(match.conversationId, second);
+  assert.equal(match.source, 'official-codex-log-active-view');
+});
+
+test('does not restore a conversation that was explicitly marked inactive', () => {
+  const conversationId = '019f4ed2-1b2f-7e92-9ea8-03ae7551f0bb';
+  const match = findLastResumedConversation(
+    `[info] thread_stream_view_activity_changed active=true conversationId=${conversationId}\n` +
+      `[info] thread_stream_view_activity_changed active=false conversationId=${conversationId}\n`
+  );
+
+  assert.equal(match, null);
+});
+
 test('skips a conversation ID rejected by a later no-turns event', () => {
   const first = '019ef698-7003-71a0-93f0-ce4b95c1dc38';
   const rejected = '019ef699-6609-7eb1-b43d-28e0ad075654';

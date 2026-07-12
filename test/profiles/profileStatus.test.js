@@ -118,19 +118,19 @@ test('compact rate summary shows weekly remaining limit and reset countdown', ()
   );
 });
 
-test('nearly full remaining limits display as 100 percent', () => {
+test('remaining limits do not hide a reported one-percent usage change', () => {
   const now = Date.parse('2026-05-20T10:00:00.000Z');
   const status = getProfileRateStatus(
     createProfile({
       observedAt: now - 10_000,
       sourceFile: USAGE_API_SOURCE,
       primary: {
-        usedPercent: 0.6,
+        usedPercent: 1,
         resetAt: now + 60 * 60 * 1000,
         windowMinutes: 300
       },
       secondary: {
-        usedPercent: 0.9,
+        usedPercent: 1,
         resetAt: now + 24 * 60 * 60 * 1000,
         windowMinutes: 10_080
       }
@@ -139,15 +139,42 @@ test('nearly full remaining limits display as 100 percent', () => {
     ACTIVE_PROFILE_OPTIONS
   );
 
-  assert.equal(getWindowRemainingPercent(status.primary, now), 100);
-  assert.equal(getWindowRemainingPercent(status.secondary, now), 100);
+  assert.equal(getWindowRemainingPercent(status.primary, now), 99);
+  assert.equal(getWindowRemainingPercent(status.secondary, now), 99);
   assert.equal(
     formatCompactRateSummary(status, now, {
       includePrimaryCountdown: false,
       includeSecondaryCountdown: false,
       percentageMode: 'remaining'
     }),
-    '5H 100% | W 100%'
+    '5H 99% | W 99%'
+  );
+});
+
+test('weekly-only exact data is displayed in the weekly lane', () => {
+  const now = Date.parse('2026-07-12T20:00:00.000Z');
+  const status = getProfileRateStatus(
+    createProfile({
+      observedAt: now - 10_000,
+      sourceFile: USAGE_API_SOURCE,
+      primary: null,
+      secondary: {
+        usedPercent: 1,
+        resetAt: now + 7 * 24 * 60 * 60 * 1000,
+        windowMinutes: 10_080
+      }
+    }),
+    now,
+    ACTIVE_PROFILE_OPTIONS
+  );
+
+  assert.equal(
+    formatCompactRateSummary(status, now, {
+      includePrimaryCountdown: false,
+      includeSecondaryCountdown: true,
+      percentageMode: 'remaining'
+    }),
+    'W 99% 7d'
   );
 });
 
